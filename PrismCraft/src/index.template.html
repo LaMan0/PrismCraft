@@ -176,19 +176,6 @@
   #immersion.water { opacity: 1; background: radial-gradient(ellipse at center, rgba(20,70,160,.10) 30%, rgba(10,40,120,.55) 100%); backdrop-filter: blur(1.2px); }
   #immersion.lava { opacity: 1; background: radial-gradient(ellipse at center, rgba(255,120,0,.25) 20%, rgba(140,30,0,.75) 100%); }
   #overlay.hidden { display: none; }
-
-  /* Options injected by options.js */
-  #options-panel { width: 360px; margin: 0 auto; text-align: left; }
-  #options-panel.hidden { display: none; }
-  #options-panel .opt-title { text-align: center; color: #ffd54a; font-size: 14px; margin: 0 0 14px; text-shadow: 2px 2px #3f3f3f; }
-  #options-panel .opt-grid { display: grid; gap: 8px; }
-  #options-panel .opt-slider { position: relative; height: 30px; box-sizing: border-box; padding: 9px 10px 0; background: #555; border: 2px solid; border-color: #222 #aaa #aaa #222; cursor: ew-resize; color: #fff; font: 8px var(--mc-font); }
-  #options-panel .opt-slider::before { content: ""; position: absolute; left: 10px; right: 10px; top: 20px; height: 3px; background: #222; box-shadow: inset 0 1px #999; }
-  #options-panel .opt-slider span { position: relative; z-index: 1; text-shadow: 1px 1px #222; }
-  #options-panel .opt-knob { position: absolute; z-index: 2; top: 16px; width: 20px; height: 10px; background: #c6c6c6; border: 2px solid; border-color: #fff #555 #555 #fff; box-sizing: border-box; pointer-events: none; }
-  #options-panel .opt-btn, #options-panel .opt-done { width: 100%; box-sizing: border-box; }
-  #splash { position: absolute; left: 105%; top: 52%; white-space: nowrap; transform: rotate(-12deg); color: #ffff55; font: 10px var(--mc-font); text-shadow: 2px 2px 0 #3f3f00; animation: splash-wobble .9s ease-in-out infinite alternate; }
-  @keyframes splash-wobble { from { transform: rotate(-12deg) scale(1); } to { transform: rotate(-8deg) scale(1.08); } }
 </style>
 </head>
 <body>
@@ -342,130 +329,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-/* ===== PrismCraft extension: audio.js ===== */
-/* =====================================================================
-   0. AUDIO PROCÉDURAL (WebAudio) — aucun fichier externe
-   ---------------------------------------------------------------------
-   Minecraft se reconnaît les yeux fermés : pas, « clac » de la pose, craquement
-   du minage, « oof », sifflement du creeper, grognement du zombie.  Tous les
-   effets sont SYNTHÉTISÉS ici (oscillateurs + bruit filtré + enveloppes), ce qui
-   respecte la contrainte « un seul fichier » et évite toute question de droits.
-   API : SFX.play('break', { pos, type, vol })  ·  SFX.setVolume(v)
-   Le contexte audio n'est créé qu'au premier clic (politique des navigateurs).
-   ===================================================================== */
-const SFX = (() => {
-  let ctx = null, master = null, noiseBuf = null;
-  let volume = 0.7;
-  const ensure = () => {
-    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return true; }
-    try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return false; }
-    master = ctx.createGain(); master.gain.value = volume; master.connect(ctx.destination);
-    // Buffer de bruit blanc de 2 s réutilisé par tous les effets « bruités »
-    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-    const d = noiseBuf.getChannelData(0); for (let n = 0; n < d.length; n++) d[n] = Math.random() * 2 - 1;
-    return true;
-  };
-  document.addEventListener('pointerdown', ensure, { once: false });
-  document.addEventListener('keydown', ensure, { once: false });
-
-  /** Gain enveloppé (attaque / déclin) branché sur le master, avec atténuation par distance. */
-  const env = (t0, a, d, peak = 1, dist = 0) => {
-    const g = ctx.createGain();
-    const att = dist > 0 ? Math.max(0, 1 - dist / 18) : 1;              // portée ≈ 18 u
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(peak * att, t0 + a);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
-    g.connect(master); return g;
-  };
-  /** Rafale de bruit filtré (pas, casse, explosion…). */
-  const noise = (t0, dur, { type = 'bandpass', freq = 1000, q = 1, peak = 0.5, dist = 0, sweep = null } = {}) => {
-    const src = ctx.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
-    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t0); f.Q.value = q;
-    if (sweep) f.frequency.exponentialRampToValueAtTime(sweep, t0 + dur);
-    const g = env(t0, 0.005, dur, peak, dist);
-    src.connect(f); f.connect(g); src.start(t0); src.stop(t0 + dur + 0.05);
-  };
-  /** Note d'oscillateur avec glissando optionnel. */
-  const tone = (t0, dur, { type = 'square', freq = 440, to = null, peak = 0.3, dist = 0, a = 0.005 } = {}) => {
-    const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t0);
-    if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + dur);
-    const g = env(t0, a, dur, peak, dist);
-    o.connect(g); o.start(t0); o.stop(t0 + a + dur + 0.05);
-  };
-  const rnd = (a, b) => a + Math.random() * (b - a);
-
-  /* ---- Bibliothèque d'effets : nom → fonction(t0, opts) ---- */
-  const LIB = {
-    // Pas : bruit court dont la couleur dépend du matériau (herbe sourde, pierre claire, bois mat, sable feutré)
-    step(t, o) {
-      const m = o.type || 'grass';
-      const p = m === 'grass' || m === 'leaves' || m === 'dirt' ? [500, 0.06, 0.18] : m === 'sand' || m === 'gravel' || m === 'snow' ? [1800, 0.07, 0.12] : m.includes('wood') || m === 'planks' || m === 'bookshelf' ? [700, 0.05, 0.22] : m === 'wool' ? [300, 0.06, 0.12] : [2600, 0.045, 0.2];
-      noise(t, p[1], { freq: p[0] * rnd(0.9, 1.1), q: 0.8, peak: p[2] * (o.vol ?? 1), dist: o.dist });
-    },
-    // Casse : craquement grave + éclats
-    break(t, o) { noise(t, 0.16, { type: 'lowpass', freq: 900, peak: 0.6, dist: o.dist, sweep: 200 }); noise(t + 0.02, 0.08, { freq: 2400, q: 2, peak: 0.25, dist: o.dist }); },
-    // Coup de minage (répété)
-    hit(t, o) { noise(t, 0.05, { freq: rnd(1500, 2200), q: 1.5, peak: 0.22, dist: o.dist }); },
-    // Pose : « clac » sec
-    place(t, o) { noise(t, 0.05, { type: 'lowpass', freq: 1200, peak: 0.55, dist: o.dist }); tone(t, 0.04, { type: 'triangle', freq: 180, to: 90, peak: 0.25 }); },
-    // Ramassage : « pop » aigu qui monte
-    pop(t) { tone(t, 0.09, { type: 'sine', freq: rnd(600, 900), to: 1500, peak: 0.25 }); },
-    // Clic d'interface
-    click(t) { tone(t, 0.03, { type: 'square', freq: 1100, peak: 0.12 }); },
-    // « Oof » : deux notes descendantes nasillardes
-    hurt(t) { tone(t, 0.12, { type: 'sawtooth', freq: 320, to: 180, peak: 0.28 }); tone(t + 0.04, 0.1, { type: 'square', freq: 200, to: 120, peak: 0.15 }); },
-    // Manger : croquements réguliers
-    eat(t) { for (let n = 0; n < 3; n++) noise(t + n * 0.12, 0.05, { type: 'lowpass', freq: 700, peak: 0.3 }); },
-    burp(t) { tone(t, 0.25, { type: 'sawtooth', freq: 140, to: 80, peak: 0.25, a: 0.03 }); },
-    // Plongeon / nage
-    splash(t, o) { noise(t, 0.3, { type: 'bandpass', freq: 800, q: 0.5, peak: 0.4, dist: o.dist, sweep: 300 }); },
-    // Explosion : boom grave + souffle
-    explode(t, o) { noise(t, 1.1, { type: 'lowpass', freq: 300, peak: 1.0, dist: o.dist ? o.dist * 0.4 : 0, sweep: 60 }); tone(t, 0.5, { type: 'sine', freq: 90, to: 30, peak: 0.8, a: 0.01 }); noise(t + 0.05, 0.5, { freq: 2000, q: 0.5, peak: 0.3, dist: o.dist }); },
-    // Sifflement du creeper (mèche, 1.5 s)
-    fuse(t, o) { noise(t, 1.5, { type: 'highpass', freq: 2500, peak: 0.45, dist: o.dist }); },
-    // Grognement du zombie : dent de scie grave avec vibrato
-    zombie(t, o) { tone(t, 0.6, { type: 'sawtooth', freq: rnd(70, 95), to: 60, peak: 0.22, dist: o.dist, a: 0.08 }); tone(t + 0.1, 0.5, { type: 'square', freq: rnd(110, 140), to: 90, peak: 0.08, dist: o.dist, a: 0.05 }); },
-    // Cliquetis du squelette
-    skeleton(t, o) { for (let n = 0; n < 4; n++) noise(t + n * 0.07, 0.03, { freq: rnd(2500, 4000), q: 4, peak: 0.18, dist: o.dist }); },
-    // Arc et flèche
-    bow(t, o) { noise(t, 0.12, { type: 'bandpass', freq: 1200, q: 0.7, peak: 0.35, dist: o.dist, sweep: 400 }); tone(t, 0.1, { type: 'triangle', freq: 500, to: 250, peak: 0.12, dist: o.dist }); },
-    arrowhit(t, o) { noise(t, 0.05, { type: 'lowpass', freq: 1500, peak: 0.3, dist: o.dist }); },
-    // Cris d'animaux
-    pig(t, o) { tone(t, 0.18, { type: 'sawtooth', freq: 300, to: 420, peak: 0.16, dist: o.dist, a: 0.02 }); tone(t + 0.18, 0.12, { type: 'sawtooth', freq: 420, to: 260, peak: 0.12, dist: o.dist }); },
-    cow(t, o) { tone(t, 0.7, { type: 'sawtooth', freq: 150, to: 110, peak: 0.16, dist: o.dist, a: 0.1 }); },
-    sheep(t, o) { for (let n = 0; n < 5; n++) tone(t + n * 0.08, 0.07, { type: 'square', freq: 330 + (n % 2) * 40, peak: 0.09, dist: o.dist }); },
-    // Montée de niveau / XP
-    levelup(t) { [523, 659, 784, 1047].forEach((f, n) => tone(t + n * 0.09, 0.25, { type: 'triangle', freq: f, peak: 0.2 })); },
-    xp(t) { tone(t, 0.08, { type: 'sine', freq: rnd(1200, 2400), peak: 0.1 }); },
-    // Ouverture / fermeture de coffre
-    chest(t) { noise(t, 0.2, { type: 'lowpass', freq: 500, peak: 0.35 }); tone(t + 0.05, 0.12, { type: 'triangle', freq: 220, to: 330, peak: 0.1 }); },
-    // Ambiance caverne : nappe grave inquiétante
-    cave(t) { tone(t, 2.5, { type: 'sine', freq: rnd(60, 90), to: 45, peak: 0.18, a: 0.8 }); noise(t + 0.3, 2, { type: 'bandpass', freq: 400, q: 6, peak: 0.08 }); },
-    // Lave / feu
-    fizz(t, o) { noise(t, 0.4, { type: 'highpass', freq: 3000, peak: 0.3, dist: o.dist }); },
-  };
-
-  const lastPlayed = {};
-  return {
-    /** Joue un effet ; `pos` (Vector3) permet l'atténuation par distance au joueur (listener = SFX.listener). */
-    play(name, o = {}) {
-      if (!ensure() || !LIB[name] || volume <= 0) return;
-      const now = performance.now();
-      if (lastPlayed[name] && now - lastPlayed[name] < (o.minGap ?? 30)) return;   // anti-spam
-      lastPlayed[name] = now;
-      if (o.pos && this.listener) o.dist = o.pos.distanceTo(this.listener);
-      if (o.dist > 20) return;
-      try { LIB[name](ctx.currentTime, o); } catch { /* contexte fermé */ }
-    },
-    setVolume(v) { volume = Math.max(0, Math.min(1, v)); if (master) master.gain.value = volume; },
-    get volume() { return volume; },
-    listener: null,
-  };
-})();
-/* ===== End extension: audio.js ===== */
-
-let LIGHT = null;
-
 
 /* =====================================================================
    1. GÉOMÉTRIE DE LA GRILLE TRIANGULAIRE  (inchangé)
@@ -738,113 +601,6 @@ const TYPES = {
   lava:       { name: 'Lave (source)',      color: 0xd8571a, cat: 'misc', transparent: true, opacity: 0.95, fluid: true, fam: 'lava', dec: 2, slow: 5, emissive: 0xff5a00 },
   lavaflow:   { name: 'Lave (courant)',     color: 0xe0651f, transparent: true, opacity: 0.9,  fluid: true, fam: 'lava', dec: 2, slow: 5, emissive: 0xff5a00, hidden: true },
 };
-
-/* ===== PrismCraft extension: blocks_extra.js ===== */
-/* =====================================================================
-   4c. BLOCS SUPPLÉMENTAIRES « MINECRAFT » (laine, coffre, cactus, végétation)
-   ---------------------------------------------------------------------
-   Inclus AVANT `TYPE_IDS = Object.keys(TYPES)` : on complète simplement le
-   dictionnaire TYPES, les couches InstancedMesh / textures / catalogue suivent.
-   Les textures sont fournies par EXTRA_TEX[type] (appelé depuis le `default`
-   de generateTexture avec ses helpers px / noiseFill) — toujours du Canvas 2D
-   16×16, jamais de fichier externe.
-   `light` = niveau lumineux 0..15 émis (utilisé par l'éclairage voxel, §6c).
-   ===================================================================== */
-Object.assign(TYPES, {
-  wool:          { name: 'Laine',            color: 0xe9e9e9, cat: 'build', hard: 0.8, soft: true },
-  wool_red:      { name: 'Laine rouge',      color: 0xb02e26, cat: 'build', hard: 0.8, soft: true },
-  wool_blue:     { name: 'Laine bleue',      color: 0x3c44aa, cat: 'build', hard: 0.8, soft: true },
-  wool_green:    { name: 'Laine verte',      color: 0x5e7c16, cat: 'build', hard: 0.8, soft: true },
-  wool_yellow:   { name: 'Laine jaune',      color: 0xfed83d, cat: 'build', hard: 0.8, soft: true },
-  wool_black:    { name: 'Laine noire',      color: 0x1d1d21, cat: 'build', hard: 0.8, soft: true },
-  chest:         { name: 'Coffre',           color: 0xa8792f, cat: 'deco',  hard: 2.5, tool: 'axe', soft: true, container: true },
-  cactus:        { name: 'Cactus',           color: 0x5a8f2e, cat: 'deco',  hard: 0.4, soft: true, hurts: true, scale: [0.9, 1, 0.9] },
-  tallgrass:     { name: 'Herbes hautes',    color: 0x5aa03a, cat: 'deco',  hard: 0,   passable: true, plant: true, scale: [0.75, 0.7, 0.75], drop: null },
-  flower_red:    { name: 'Coquelicot',       color: 0xd82424, cat: 'deco',  hard: 0,   passable: true, plant: true, scale: [0.28, 0.55, 0.28] },
-  flower_yellow: { name: 'Pissenlit',        color: 0xf1d91c, cat: 'deco',  hard: 0,   passable: true, plant: true, scale: [0.28, 0.5, 0.28] },
-  mossy_cobble:  { name: 'Pierre moussue',   color: 0x6a7d5a, cat: 'build', hard: 2,   tool: 'pickaxe' },
-  netherrack:    { name: 'Netherrack',       color: 0x6e3634, cat: 'build', hard: 0.4, tool: 'pickaxe', soft: true },
-  ice:           { name: 'Glace',            color: 0x9fc9ff, cat: 'deco',  hard: 0.5, transparent: true, opacity: 0.8, drop: null, slippery: true },
-});
-// Sources lumineuses (niveau 0..15, comme Minecraft) — la torche est déjà émissive visuellement
-TYPES.torch.light = 14; TYPES.glowstone.light = 15; TYPES.lava.light = 15; TYPES.lavaflow.light = 12; TYPES.redstone_block.light = 4;
-
-const EXTRA_TEX = {
-  chest({ px, noiseFill, SIZE }) {
-    noiseFill([168, 121, 47], 0.08);
-    for (let x = 0; x < SIZE; x++) { px(x, 0, [90, 60, 20]); px(x, 15, [90, 60, 20]); px(x, 6, [70, 48, 18]); px(x, 7, [70, 48, 18]); }
-    for (let y = 0; y < SIZE; y++) { px(0, y, [90, 60, 20]); px(15, y, [90, 60, 20]); }
-    for (let y = 5; y < 10; y++) for (let x = 6; x < 10; x++) px(x, y, [70, 70, 75]);            // loquet
-    px(7, 7, [30, 30, 30]); px(8, 7, [30, 30, 30]);
-  },
-  cactus({ px, noiseFill, SIZE }) {
-    noiseFill([70, 130, 40], 0.12);
-    for (let y = 0; y < SIZE; y++) { px(0, y, [40, 80, 20]); px(15, y, [40, 80, 20]); px(4 + (y % 2), y, [110, 170, 70]); px(11 - (y % 2), y, [110, 170, 70]); }
-    for (let y = 1; y < SIZE; y += 3) { px(2, y, [220, 230, 200]); px(13, y + 1, [220, 230, 200]); }   // épines
-  },
-  tallgrass({ px, noiseFill, SIZE }) {
-    noiseFill([70, 140, 45], 0.2);
-    for (let x = 0; x < SIZE; x += 2) for (let y = 0; y < 4 + (x % 5); y++) px(x, y, [50, 100, 30]);
-  },
-  flower_red({ px, noiseFill, SIZE }) {
-    noiseFill([60, 120, 40], 0.15);
-    for (let y = 0; y < 7; y++) for (let x = 2; x < 14; x++) px(x, y, [216, 36, 36], 1 + ((x + y) % 3 - 1) * 0.08);
-    for (let x = 6; x < 10; x++) for (let y = 2; y < 5; y++) px(x, y, [30, 20, 20]);
-  },
-  flower_yellow({ px, noiseFill, SIZE }) {
-    noiseFill([60, 120, 40], 0.15);
-    for (let y = 0; y < 7; y++) for (let x = 2; x < 14; x++) px(x, y, [241, 217, 28], 1 + ((x * 3 + y) % 3 - 1) * 0.08);
-  },
-  mossy_cobble({ px, noiseFill, SIZE, rnd }) {
-    noiseFill([122, 122, 122], 0.16);
-    for (let n = 0; n < 40; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), [90, 130, 70], 1 + (rnd() - 0.5) * 0.3);
-    for (let y = 0; y < SIZE; y += 4) for (let x = 0; x < SIZE; x++) px((x + y) % SIZE, y, [70, 70, 70]);
-  },
-  netherrack({ px, noiseFill, SIZE, rnd }) {
-    noiseFill([110, 54, 52], 0.22);
-    for (let n = 0; n < 30; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), [70, 30, 30]);
-  },
-  ice({ px, noiseFill, SIZE }) {
-    noiseFill([159, 201, 255], 0.06);
-    for (let n = 0; n < 8; n++) px((n * 5) % SIZE, (n * 7) % SIZE, [230, 240, 255]);
-    for (let y = 3; y < 12; y++) px(y, y, [200, 225, 255]);
-  },
-  wool({ px, noiseFill, SIZE }) { noiseFill([233, 233, 233], 0.07); for (let y = 0; y < SIZE; y += 3) for (let x = (y / 3) % 2; x < SIZE; x += 3) px(x, y, [205, 205, 205]); },
-};
-for (const w of ['wool_red', 'wool_blue', 'wool_green', 'wool_yellow', 'wool_black']) EXTRA_TEX[w] = ({ px, noiseFill, SIZE, base }) => { noiseFill(base, 0.07); for (let y = 0; y < SIZE; y += 3) for (let x = (y / 3) % 2; x < SIZE; x += 3) px(x, y, base, 0.85); };
-
-/** Icônes pixel-art (16 lignes) des nouveaux objets ; résolu à l'appel (ICONS est défini plus loin). */
-const EXTRA_ICON_GRIDS = {
-  bone: ['................', '................', '..bb........bb..', '.bbbb......bbbb.', '.bbbbb....bbbbb.', '..bbbbbbbbbbbb..', '...bbbbbbbbbb...', '....bbbbbbbb....',
-    '....bbbbbbbb....', '...bbbbbbbbbb...', '..bbbbbbbbbbbb..', '.bbbbb....bbbbb.', '.bbbb......bbbb.', '..bb........bb..', '................', '................'],
-  arrow: ['..............ff', '.............fff', '............fhff', '...........fhhf.', '..........fhh...', '.........hhh....', '........hhh.....', '.......hhh......',
-    '......hhh.......', '.....hhh........', '....hhh.........', '...hhh..........', '..wwh...........', '.www............', 'www.............', 'ww..............'],
-  bow: ['......sss.......', '.....s...s......', '....s.....s.....', '...s.......s....', '...s.......s....', '..s.........s...', '..s.........s...', '..s..t......s...',
-    '..s..t......s...', '..s.........s...', '..s.........s...', '...s.......s....', '...s.......s....', '....s.....s.....', '.....s...s......', '......sss.......'],
-  gunpowder: ['................', '................', '.....g..g.......', '...g..gg..g.....', '....gggggg......', '..g.gggggg.g....', '...gggggggg.....', '..gggggggggg....',
-    '...gggggggg.....', '..g.gggggg.g....', '....gggggg......', '...g..gg..g.....', '.....g..g.......', '................', '................', '................'],
-  string: ['................', '..ww............', '...ww...........', '....ww..........', '.....ww.........', '......ww........', '.......ww.......', '........ww......',
-    '.........ww.....', '..........ww....', '...........ww...', '............ww..', '.............ww.', '..............ww', '................', '................'],
-  flint_and_steel: ['................', '......iiii......', '.....i....i.....', '....i......i....', '....i......i....', '.....i....i.....', '......iiii......', '........i.......',
-    '.......iii......', '......fffff.....', '.....fffffff....', '.....fffffff....', '......fffff.....', '.......fff......', '................', '................'],
-  egg: ['................', '................', '......ww........', '.....wwww.......', '....wwwwww......', '....wwwwww......', '...wwwwwwww.....', '...wwwwwwww.....',
-    '...wwwwwwww.....', '...wwwwwwww.....', '....wwwwww......', '....wwwwww......', '.....wwww.......', '................', '................', '................'],
-  feather: ['..............ww', '.............www', '............www.', '...........wwww.', '..........wwww..', '.........wwww...', '........wwww....', '.......wwww.....',
-    '......wwww......', '.....wwww.......', '....wwww........', '...www..........', '..ww............', '.w..............', '................', '................'],
-};
-function extraIcon(id) {
-  const P = {
-    bone: { b: [235, 235, 220] }, arrow: { f: [200, 200, 200], h: [120, 90, 50], w: [230, 230, 230] }, bow: { s: [120, 80, 40], t: [220, 220, 220] },
-    gunpowder: { g: [70, 70, 70] }, string: { w: [230, 230, 230] }, flint_and_steel: { i: [180, 180, 190], f: [80, 80, 90] },
-    egg: { w: [240, 230, 200] }, feather: { w: [240, 240, 240] },
-    mutton: { m: [230, 100, 110], f: [250, 240, 230], b: [230, 220, 200] }, cooked_mutton: { m: [150, 80, 50], f: [250, 240, 230], b: [230, 220, 200] },
-    chicken: { m: [240, 200, 190], f: [250, 240, 230], b: [230, 220, 200] }, cooked_chicken: { m: [190, 120, 60], f: [250, 240, 230], b: [230, 220, 200] },
-  };
-  if (!P[id]) return null;
-  return { grid: EXTRA_ICON_GRIDS[id] || ICONS.meat, pal: P[id] };
-}
-/* ===== End extension: blocks_extra.js ===== */
-
 const TYPE_IDS = Object.keys(TYPES);
 const isFluidType = (t) => !!TYPES[t]?.fluid;
 const FLOW_OF = { water: 'flow', lava: 'lavaflow' };         // famille → type "courant"
@@ -899,24 +655,6 @@ const ITEMS = {
   diamond_leggings:   { name: 'Jambières en diamant',cat: 'tools', armor: 6, slot: 2, tier: 3, stack: 1 },
   diamond_boots:      { name: 'Bottes en diamant',   cat: 'tools', armor: 3, slot: 3, tier: 3, stack: 1 },
 };
-
-/* ===== PrismCraft extension: items_extra.js (items) ===== */
-Object.assign(ITEMS, {
-  bone:            { name: 'Os',               cat: 'misc', material: true },
-  arrow:           { name: 'Flèche',           cat: 'tools', ammo: true },
-  bow:             { name: 'Arc',              cat: 'tools', bow: true, dmg: 1, stack: 1, tier: 0 },
-  gunpowder:       { name: 'Poudre à canon',   cat: 'misc', material: true },
-  string:          { name: 'Ficelle',          cat: 'misc', material: true },
-  flint_and_steel: { name: 'Briquet',          cat: 'tools', igniter: true, stack: 1, tier: 2 },
-  egg:             { name: 'Œuf',              cat: 'misc', material: true, stack: 16 },
-  feather:         { name: 'Plume',            cat: 'misc', material: true },
-  mutton:          { name: 'Mouton cru',       cat: 'food', food: 2, sat: 1.2 },
-  cooked_mutton:   { name: 'Mouton cuit',      cat: 'food', food: 6, sat: 9.6 },
-  chicken:         { name: 'Poulet cru',       cat: 'food', food: 2, sat: 1.2 },
-  cooked_chicken:  { name: 'Poulet cuit',      cat: 'food', food: 6, sat: 7.2 },
-});
-/* ===== End extension: items_extra.js (items) ===== */
-
 const ITEM_IDS = Object.keys(ITEMS);
 /** Définition unifiée (bloc OU objet) d'un identifiant. */
 const DEF = (id) => TYPES[id] || ITEMS[id] || null;
@@ -981,28 +719,7 @@ TIER_MATERIAL.forEach((M, t) => {
 });
 /** Cuisson au four : entrée → sortie (le combustible est le charbon, 8 cuissons, ou planches/bois/bâton). */
 const SMELTING = { iron_ore: 'iron_ingot', gold: 'gold_ingot', sand: 'glass', cobblestone: 'stone', porkchop: 'cooked_porkchop', beef: 'cooked_beef', wood: 'coal', coal_ore: 'coal', diamond_ore: 'diamond' };
-const FUEL = { coal: 80, wood: 15, planks: 15, stick: 5, crafting_table: 15, bookshelf: 15 };
-/* ===== PrismCraft extension: items_extra.js (recipes) ===== */
-/* =====================================================================
-   RECETTES SUPPLÉMENTAIRES (coffre, arc, TNT, laine, cuisson)
-   ===================================================================== */
-shaped(['PPP', 'P P', 'PPP'], { P: 'planks' }, ['chest', 1]);
-shaped([' SW', 'S W', ' SW'], { S: 'stick', W: 'string' }, ['bow', 1]);
-shaped(['F', 'S', 'E'], { F: 'cobblestone', S: 'stick', E: 'feather' }, ['arrow', 4]);
-shaped(['GSG', 'SGS', 'GSG'], { G: 'gunpowder', S: 'sand' }, ['tnt', 1]);
-shapeless(['iron_ingot', 'cobblestone'], ['flint_and_steel', 1]);
-shapeless(['cobblestone', 'tallgrass'], ['mossy_cobble', 1]);
-shaped(['WW', 'WW'], { W: 'string' }, ['wool', 1]);
-shapeless(['wool', 'flower_red'], ['wool_red', 1]);
-shapeless(['wool', 'flower_yellow'], ['wool_yellow', 1]);
-shapeless(['wool', 'cactus'], ['wool_green', 1]);
-shapeless(['wool', 'coal'], ['wool_black', 1]);
-shapeless(['wool', 'diamond_ore'], ['wool_blue', 1]);
-shapeless(['bone'], ['wool', 1]);                                                   // farine d'os simplifiée → laine blanche
-Object.assign(SMELTING, { mutton: 'cooked_mutton', chicken: 'cooked_chicken', cactus: 'wool_green', netherrack: 'brick', ice: 'water' });
-Object.assign(FUEL, { chest: 15, bow: 15, wool: 5 });
-/* ===== End extension: items_extra.js (recipes) ===== */
-           // secondes de combustion (1 cuisson = 10 s)
+const FUEL = { coal: 80, wood: 15, planks: 15, stick: 5, crafting_table: 15, bookshelf: 15 };           // secondes de combustion (1 cuisson = 10 s)
 
 /**
  * matchRecipes(grid, w) → { out: [id, n], recipe } | null
@@ -1315,8 +1032,7 @@ function generateTexture(baseColor, type) {
       break;
     }
     default:
-      if (EXTRA_TEX[type]) EXTRA_TEX[type]({ px, noiseFill, SIZE, base, rnd });
-      else noiseFill(base, 0.12);
+      noiseFill(base, 0.12);
   }
 
   const texture = new THREE.CanvasTexture(cv);
@@ -1392,8 +1108,6 @@ function generateItemIcon(id) {
     const raw = id === 'porkchop' ? [240, 150, 160] : id === 'beef' ? [200, 70, 70] : id === 'rotten_flesh' ? [120, 90, 60] : id === 'cooked_porkchop' ? [200, 130, 90] : [130, 70, 50];
     grid = ICONS.meat; pal = { m: raw, f: [250, 240, 230], b: [230, 220, 200] };
   }
-  const extra = typeof extraIcon === 'function' ? extraIcon(id) : null;
-  if (extra) { grid = extra.grid; pal = extra.pal; }
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
     const ch = grid[y][x]; if (ch === '.' || !pal[ch]) continue;
     const c = pal[ch], f = 1 + ((x * 7 + y * 13) % 5 - 2) * 0.04;      // léger grain déterministe
@@ -1440,62 +1154,6 @@ const iconMat = (id) => _iconMats[id] || (_iconMats[id] = new THREE.MeshBasicMat
   }
   uv.needsUpdate = true;
 }
-
-/* ===== PrismCraft extension: crack.js ===== */
-/* =====================================================================
-   14b. FISSURES DE MINAGE (destroy_stage_0 … 9) — overlay sur le bloc visé
-   ---------------------------------------------------------------------
-   Minecraft superpose 10 textures de fissures pendant le minage.  Ici les 10
-   étapes sont dessinées en Canvas 16×16 (fissures noires semi-transparentes,
-   de plus en plus ramifiées, PRNG fixe) et appliquées sur un prisme légèrement
-   agrandi (×1.01, transparent, polygonOffset) posé sur la cellule minée.
-   updateCrack(f, i, j, k) : f ∈ [0,1] → étape floor(f·10).
-   ===================================================================== */
-const CRACK_TEX = (() => {
-  const list = [];
-  const rnd = mulberry32(777);
-  // Fissures cumulatives : on part d'un canvas vide et on ajoute des segments à chaque étape
-  const cv = document.createElement('canvas'); cv.width = cv.height = 16;
-  const ctx = cv.getContext('2d');
-  const segs = [];
-  for (let stage = 0; stage < 10; stage++) {
-    const n = 2 + stage * 2;
-    for (let q = 0; q < n; q++) {
-      const x = Math.floor(rnd() * 16), y = Math.floor(rnd() * 16), len = 2 + Math.floor(rnd() * (3 + stage));
-      const dx = rnd() < 0.5 ? 1 : -1, dy = rnd() < 0.5 ? 1 : -1, horiz = rnd() < 0.5;
-      segs.push({ x, y, len, dx, dy, horiz });
-    }
-    ctx.clearRect(0, 0, 16, 16);
-    for (const sg of segs) {
-      let x = sg.x, y = sg.y;
-      for (let t = 0; t < sg.len; t++) {
-        ctx.fillStyle = `rgba(0,0,0,${0.55 + rnd() * 0.3})`;
-        ctx.fillRect(((x % 16) + 16) % 16, ((y % 16) + 16) % 16, 1, 1);
-        if (sg.horiz) { x += sg.dx; if (rnd() < 0.3) y += sg.dy; } else { y += sg.dy; if (rnd() < 0.3) x += sg.dx; }
-      }
-    }
-    const tex = new THREE.CanvasTexture(cv);                   // CanvasTexture copie le canvas au premier upload
-    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.needsUpdate = true;
-    // Forcer la copie immédiate (sinon toutes les textures partageraient l'état final du canvas)
-    const img = document.createElement('canvas'); img.width = img.height = 16; img.getContext('2d').drawImage(cv, 0, 0);
-    tex.image = img;
-    list.push(tex);
-  }
-  return list;
-})();
-const crackMat = new THREE.MeshBasicMaterial({ map: CRACK_TEX[0], transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
-const crack = new THREE.Mesh(prismGeo, crackMat);
-crack.scale.setScalar(1.01); crack.visible = false; crack.renderOrder = 2;
-scene.add(crack);
-let crackStage = -1;
-function updateCrack(f, i, j, k) {
-  const st = Math.min(9, Math.floor(f * 10));
-  if (st !== crackStage) { crackStage = st; crackMat.map = CRACK_TEX[st]; crackMat.needsUpdate = true; }
-  cellCenter(i, j, k, crack.position);
-  crack.quaternion.copy(isUp(i, j) ? Q_UP : Q_DOWN);
-  crack.visible = true;
-}
-/* ===== End extension: crack.js ===== */
 
 /* =====================================================================
    6. MONDE : UN InstancedMesh PAR TYPE DE BLOC (dictionnaire `terrain`)
@@ -1561,10 +1219,6 @@ function animateFluidTextures(t) {
    ===================================================================== */
 const AO_GLSL_PARS = `
 attribute float aoBits;
-attribute float skyL;
-attribute float blkL;
-uniform float uSkyLight;
-float packedLight(float p, float n) { return mod(floor(p / pow(16.0, n)), 16.0); }
 float aoBit(float b, float n) { return mod(floor(b / pow(2.0, n) + 0.5), 2.0); }
 float faceIndex(vec3 n) { float t = atan(n.x, n.z); if (t < 0.0) t += 6.2831853; return floor(t / 2.0943951); }
 `;
@@ -1587,19 +1241,12 @@ const AO_GLSL_APPLY = `
     float f = faceIndex(n);
     ao = (p.y > 0.0) ? 0.30 * aoBit(aoBits, f) : 0.30 * aoBit(aoBits, f + 3.0);
   }
-  float skyFace = 15.0, blockFace = 0.0;
-  if (n.y > 0.5) { skyFace = packedLight(skyL, 0.0); blockFace = packedLight(blkL, 0.0); }
-  else if (n.y < -0.5) { skyFace = packedLight(skyL, 1.0); blockFace = packedLight(blkL, 1.0); }
-  else { float lf = faceIndex(n); skyFace = packedLight(skyL, 2.0 + lf); blockFace = packedLight(blkL, 2.0 + lf); }
-  float illum = clamp(max(skyFace * uSkyLight, blockFace) / 15.0, 0.24, 1.0);
-  vColor.rgb *= (1.0 - min(ao, 0.6)) * (0.35 + 0.65 * illum);
+  vColor.rgb *= (1.0 - min(ao, 0.6));
 }
-
 #endif
 `;
 function attachAO(mat) {
   mat.onBeforeCompile = (sh) => {
-    sh.uniforms.uSkyLight = (typeof LIGHT_U !== 'undefined' ? LIGHT_U.uSkyLight : { value: 1 });
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\n' + AO_GLSL_PARS)
       .replace('#include <color_vertex>', '#include <color_vertex>\n' + AO_GLSL_APPLY);
@@ -1646,14 +1293,9 @@ function makeLayer(type) {
   });
   const max = LAYER_MAX[type] || 5000;
   // Géométrie clonée par couche : l'attribut instancié `aoBits` appartient à la géométrie
-  const geo = prismGeo.clone();
+  const geo = def.fluid ? prismGeo : prismGeo.clone();
   let ao = null;
   if (!def.fluid) { ao = new THREE.InstancedBufferAttribute(new Float32Array(max), 1); ao.setUsage(THREE.DynamicDrawUsage); geo.setAttribute('aoBits', ao); attachAO(mat); }
-  // Two packed light levels per instance; lighting.js updates these arrays.
-  const skyL = new THREE.InstancedBufferAttribute(new Float32Array(max), 1);
-  const blkL = new THREE.InstancedBufferAttribute(new Float32Array(max), 1);
-  skyL.setUsage(THREE.DynamicDrawUsage); blkL.setUsage(THREE.DynamicDrawUsage);
-  geo.setAttribute('skyL', skyL); geo.setAttribute('blkL', blkL);
   const im = new THREE.InstancedMesh(geo, mat, max);
   im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   im.setColorAt(0, _white);                                   // alloue instanceColor dès la création (USE_INSTANCING_COLOR garanti au 1er rendu)
@@ -1680,7 +1322,7 @@ function makeLayer(type) {
   }
   im.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 10, 0), 1000);   // frustumCulled = false : sphère non utilisée
   scene.add(im);
-  return { type, mesh: im, depthPre, ao, skyL, blkL, idxToKey: [], max, dirty: false };
+  return { type, mesh: im, depthPre, ao, idxToKey: [], max, dirty: false };
 }
 const terrain = {};
 for (const t of TYPE_IDS) terrain[t] = makeLayer(t);
@@ -1798,7 +1440,6 @@ function addBlock(i, j, k, type, doFlush = true, level) {
   const b = { layer, idx, type, i, j, k, hidden: false };
   if (TYPES[type].fluid) b.level = SOURCE_OF[TYPES[type].fam] === type ? 8 : (level ?? 7);   // source = 8, écoulement = 1..7
   blocks.set(key, b);
-  if (LIGHT) LIGHT.onChange(i, j, k, type);
   layer.idxToKey[idx] = key;
   writeMatrix(b);
   writeColor(b);
@@ -1826,15 +1467,12 @@ function removeBlock(i, j, k, byPlayer = false) {
     im.getMatrixAt(last, _m);  im.setMatrixAt(b.idx, _m);
     im.getColorAt(last, _c);   im.setColorAt(b.idx, _c);
     if (layer.ao) { layer.ao.array[b.idx] = layer.ao.array[last]; layer.ao.needsUpdate = true; }
-    if (layer.skyL) { layer.skyL.array[b.idx] = layer.skyL.array[last]; layer.skyL.needsUpdate = true; }
-    if (layer.blkL) { layer.blkL.array[b.idx] = layer.blkL.array[last]; layer.blkL.needsUpdate = true; }
     lb.idx = b.idx;
     layer.idxToKey[b.idx] = lastKey;
   }
   layer.idxToKey.length = last;
   im.count = last;
   blocks.delete(key);
-  if (LIGHT) LIGHT.onChange(i, j, k, null);
   flushLayer(layer);
   scheduleAround(i, j, k);
   refreshAOAround(i, j, k);
@@ -1847,594 +1485,10 @@ const isSolid = (i, j, k) => { const b = blocks.get(cellKey(i, j, k)); return !!
 
 /* ---- Génération procédurale (bruit re-seedable, voir src/worldgen.js) ---- */
 let fbm = makePerlin(1337);
-/* ===== PrismCraft extension: noise3.js ===== */
-/* =====================================================================
-   6a. BRUIT 3D (value noise trilinéaire + fbm) — grottes et filons
-   ---------------------------------------------------------------------
-   Le Perlin 2D existant (makePerlin) reste intact pour le relief ; ici on
-   ajoute un bruit VOLUMIQUE déterministe (hash entier → gradient) utilisé
-   pour creuser les grottes (« swiss cheese » comme Minecraft) et moduler
-   les biomes.  Retourne des valeurs dans [0, 1].
-   ===================================================================== */
-function makeNoise3(seed) {
-  const h3 = (x, y, z) => {
-    let n = (x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1013904223) | 0;
-    n = Math.imul(n ^ (n >>> 13), 1274126177);
-    return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
-  };
-  const fade = t => t * t * (3 - 2 * t);
-  const lerp = (a, b, t) => a + (b - a) * t;
-  function noise(x, y, z) {
-    const X = Math.floor(x), Y = Math.floor(y), Z = Math.floor(z);
-    const u = fade(x - X), v = fade(y - Y), w = fade(z - Z);
-    return lerp(
-      lerp(lerp(h3(X, Y, Z), h3(X + 1, Y, Z), u), lerp(h3(X, Y + 1, Z), h3(X + 1, Y + 1, Z), u), v),
-      lerp(lerp(h3(X, Y, Z + 1), h3(X + 1, Y, Z + 1), u), lerp(h3(X, Y + 1, Z + 1), h3(X + 1, Y + 1, Z + 1), u), v), w);
-  }
-  return function fbm3(x, y, z, octaves = 2, lac = 2.0, gain = 0.5) {
-    let amp = 1, freq = 1, sum = 0, norm = 0;
-    for (let o = 0; o < octaves; o++) { sum += amp * noise(x * freq, y * freq, z * freq); norm += amp; amp *= gain; freq *= lac; }
-    return sum / norm;
-  };
-}
-let noise3 = makeNoise3(1337);
-/* ===== End extension: noise3.js ===== */
 
-
-
-/* ===== PrismCraft extension: worldgen.js ===== */
-/* =====================================================================
-   6b. MONDE INFINI + SEED — biomes, grottes, minerais, végétation, chunks
-   ---------------------------------------------------------------------
-   Remplace l'ancien generateWorld() à monde fini. Le relief utilise le
-   Perlin 2D re-seedable (fbm) ; on y superpose :
-     • BIOMES (température / humidité) : plaines, forêt, désert, toundra ;
-     • GROTTES (deux bruits 3D « ridged »), lacs de lave profonds ;
-     • MINERAIS en filons par profondeur (charbon > fer > or > diamant) ;
-     • VÉGÉTATION : herbes hautes, fleurs, cactus, et 3 essences d'arbres ;
-     • COFFRE DE DÉPART près du spawn.
-
-   Monde INFINI : découpé en chunks de 16×16 colonnes. Le terrain est généré
-   autour du joueur à mesure qu'il se déplace (LOAD_RADIUS), et les chunks
-   trop éloignés sont déchargés (UNLOAD_RADIUS, avec hystérésis). Chaque
-   cellule est calculée de façon DÉTERMINISTE à partir de la SEED (bruit +
-   hash), donc un même monde est reconstruit à l'identique : les modifications
-   du joueur (journal `edits`) sont réappliquées quand un chunk est rechargé.
-   ===================================================================== */
-
-const CHUNK = 16;                     // côté d'un chunk, en cellules
-const LOAD_RADIUS = 2;                // chunks chargés autour du joueur (5×5 = 80×80 cellules, ≈ 40×69 unités)
-const UNLOAD_RADIUS = LOAD_RADIUS + 2; // hystérésis avant déchargement
-const BIOME_IDS = ['plains', 'forest', 'desert', 'taiga'];
-
-let worldSeed = 0;
-const loadedChunks = new Set();       // "ci,cj" déjà générés (terrain de base)
-const loadQueue = [];                 // "ci,cj" à générer (budget par frame)
-const unloadQueue = [];               // "ci,cj" à libérer (budget par frame)
-
-const chunkKey = (ci, cj) => ci + ',' + cj;
-const chunkOf = (i, j) => ({ ci: Math.floor(i / CHUNK), cj: Math.floor(j / CHUNK) });
-const cellInChunk = (i, j, ci, cj) => ci * CHUNK <= i && i < (ci + 1) * CHUNK && cj * CHUNK <= j && j < (cj + 1) * CHUNK;
-
-/** Seed depuis l'URL (?seed=…) ou null. */
-function seedFromURL() {
-  const m = /[?&]seed=(-?\d+)/.exec(location.search);
-  return m ? (parseInt(m[1], 10) >>> 0) : null;
-}
-/** Ré-assigne les bruits pour une seed donnée. */
-function setWorldSeed(seed) {
-  worldSeed = seed >>> 0;
-  fbm = makePerlin(worldSeed);
-  noise3 = makeNoise3(worldSeed);
-}
-/** Met à jour l'affichage de la seed dans le menu. */
-function updateSeedLine() {
-  const el = document.getElementById('seed-line');
-  if (el) el.textContent = `🌱 Seed : ${worldSeed}`;
-}
-
-/* ---- Hauteur / biome / grottes d'une colonne (déterministe à partir de la seed) ---- */
-function computeBiome(wx, wz) {
-  const temp = fbm(wx * 0.028 + 500, wz * 0.028 + 500, 2), hum = fbm(wx * 0.03 - 300, wz * 0.03 + 800, 2);
-  if (temp > 0.22 && hum < 0.05) return 2;        // désert
-  if (temp < -0.26) return 3;                      // toundra
-  if (hum > 0.1) return 1;                         // forêt
-  return 0;                                        // plaines
-}
-const biomeIndexAt = (i, j) => computeBiome(i * HX, j * HROW);
-function biomeAt(i, j) { return BIOME_IDS[biomeIndexAt(i, j)]; }
-function heightAt(i, j) {
-  const wx = i * HX, wz = j * HROW, bio = biomeIndexAt(i, j);
-  let n = fbm(wx * 0.045 + 100, wz * 0.045 + 100, 4);
-  n = n * 0.5 + 0.5;
-  n = Math.pow(n, 1.35);
-  if (bio === 2) n = n * 0.75 + 0.08;
-  return 1 + Math.round(n * 13);
-}
-function isCave(wx, k, wz) {
-  const a = Math.abs(noise3(wx * 0.10 + 7, k * 0.13 + 3, wz * 0.10 + 11) - 0.5);
-  const b = Math.abs(noise3(wx * 0.09 - 5, k * 0.12 + 9, wz * 0.11 - 2) - 0.5);
-  return a < 0.055 && b < 0.055;
-}
-/** Hash de cellule déterministe, dépendant de la seed (minerais, végétation, arbres). */
-const h2 = (a, b) => hash2(a ^ worldSeed, b ^ (worldSeed * 3));
-
-/* ---- Colonne de terrain : sous-sol, surface, eau, végétation basse ---- */
-function generateColumn(i, j) {
-  const wx = i * HX, wz = j * HROW;
-  const bio = biomeIndexAt(i, j);
-  let n = fbm(wx * 0.045 + 100, wz * 0.045 + 100, 4);
-  n = n * 0.5 + 0.5;
-  n = Math.pow(n, 1.35);
-  if (bio === 2) n = n * 0.75 + 0.08;                                  // désert plus plat
-  const top = 1 + Math.round(n * 13);
-  const beach = top <= WATER_LEVEL + 0.5;
-  for (let k = 0; k <= top; k++) {
-    let type;
-    // ---- Grottes (jamais la bedrock ni les 2 blocs de surface) ----
-    if (k > 0 && k < top - 1 && top > WATER_LEVEL + 1 && isCave(wx, k, wz)) {
-      if (k <= 2 && noise3(wx * 0.2, 0, wz * 0.2) > 0.6) addBlock(i, j, k, 'lava', false);      // lacs de lave en profondeur
-      continue;
-    }
-    if (k === top) {
-      if (beach) type = 'sand';
-      else if (top >= 13 || bio === 3) type = 'snow';
-      else if (bio === 2) type = 'sand';
-      else type = 'grass';
-    } else if (k >= top - 3) {
-      type = (beach || bio === 2) ? (k >= top - 1 ? 'sand' : 'sandstone') : (bio === 3 && k === top - 1 ? 'dirt' : 'dirt');
-    } else {
-      const v = fbm(wx * 0.11 + k * 0.17 + 900, wz * 0.11 - k * 0.13 + 300, 2);
-      type = v > 0.34 ? 'granite' : v < -0.36 ? 'diorite' : (v > 0.2 && v < 0.26) ? 'andesite' : (v < -0.2 && v > -0.26 && k > 1) ? 'gravel' : 'stone';
-      if (k <= 4 && k > 0 && v > -0.05 && v < 0.05 && top > 6) type = 'gold';
-      if (type === 'stone') { const o = h2(i * 7 + k * 31, j * 13 + k * 17) % 1000; if (o < 30) type = 'coal_ore'; else if (o < 46 && k <= 9) type = 'iron_ore'; else if (o < 49 && k <= 3) type = 'diamond_ore'; }
-      if (k === 1 && v > 0.42 && top > 8) type = 'lava';                       // poches de lave profondes
-      if (k > 1 && type === 'stone' && h2(i * 3 + k, j * 5 - k) % 1000 < 6) type = 'mossy_cobble';
-    }
-    if (k === 0) type = 'stone';                                              // « bedrock » (protégée en survie)
-    addBlock(i, j, k, type, false);
-  }
-  // Lacs / océans : blocs SOURCE d'eau au-dessus du fond, jusqu'au niveau WATER_LEVEL ; glace en toundra
-  for (let k = top + 1; k <= WATER_LEVEL; k++) addBlock(i, j, k, (bio === 3 && k === WATER_LEVEL) ? 'ice' : 'water', false);
-  // ---- Végétation de surface (blocs passables) et cactus ----
-  if (!beach && top < 13) {
-    const r = h2(i * 11 + 3, j * 17 + 5) % 1000;
-    if (bio === 2) { if (r < 12) { const h = 1 + (r % 3); for (let k = 1; k <= h; k++) addBlock(i, j, top + k, 'cactus', false); } }
-    else if (bio !== 3) {
-      if (r < 140) addBlock(i, j, top + 1, 'tallgrass', false);
-      else if (r < 152) addBlock(i, j, top + 1, 'flower_red', false);
-      else if (r < 166) addBlock(i, j, top + 1, 'flower_yellow', false);
-    }
-  }
-}
-
-/* ---- Arbres : 3 essences (chêne/bouleau/sapin), feuilles transparentes ---- */
-const _tv = new THREE.Vector3(), _lv = new THREE.Vector3();
-function placeTree(i, j) {
-  const top = heightAt(i, j), bio = biomeIndexAt(i, j);
-  if (top <= WATER_LEVEL + 0.5 || top >= 13 || bio === 2) return false;
-  if (Math.abs(i) < 5 && Math.abs(j) < 4) return false;                       // zone dégagée autour du spawn
-  const density = bio === 1 ? 42 : bio === 3 ? 18 : 9;
-  if (h2(i, j) % 1000 >= density) return false;
-  const ex = blockAt(i, j, top + 1); if (ex) removeBlock(i, j, top + 1);      // remplace l'herbe haute
-  const pine = bio === 3;
-  const trunkH = pine ? 5 + (h2(j, i) % 3) : 4 + (h2(j, i) % 2);
-  for (let k = top + 1; k <= top + trunkH; k++) { if (!blockAt(i, j, k)) addBlock(i, j, k, 'wood', false); }
-  cellCenter(i, j, 0, _tv);
-  for (let dj = -3; dj <= 3; dj++) for (let di = -6; di <= 6; di++) {
-    const ii = i + di, jj = j + dj;
-    cellCenter(ii, jj, 0, _lv);
-    const d = Math.hypot(_lv.x - _tv.x, _lv.z - _tv.z);
-    if (pine) {
-      for (let k = top + 2; k <= top + trunkH + 1; k++) {
-        const lvl = top + trunkH + 1 - k, rad = lvl === 0 ? 0.3 : ((lvl % 2) ? 1.6 : 0.9) * Math.min(1, 0.5 + lvl * 0.2);
-        if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
-      }
-    } else {
-      for (let k = top + trunkH - 2; k <= top + trunkH + 1; k++) {
-        const rad = (k >= top + trunkH) ? (k === top + trunkH + 1 ? 0.8 : 1.35) : 1.9;
-        if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
-      }
-    }
-  }
-  return true;
-}
-/** Décore les arbres du chunk ET de ses 8 voisins (les canopées débordent ; idempotent). */
-function decorateTrees(ci, cj) {
-  for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
-    for (let j = cjj * CHUNK; j < (cjj + 1) * CHUNK; j++) for (let i = cii * CHUNK; i < (cii + 1) * CHUNK; i++) placeTree(i, j);
-}
-
-/* ---- Coffre de départ (à 3 cellules du spawn) ---- */
-let STARTER_CHEST = null, starterPlaced = false;
-function placeStarterChest() {
-  if (starterPlaced) return;
-  const t = heightAt(3, 0);
-  const ex = blockAt(3, 0, t + 1); if (ex) removeBlock(3, 0, t + 1);
-  addBlock(3, 0, t + 1, 'chest', false);
-  STARTER_CHEST = cellKey(3, 0, t + 1);
-  starterPlaced = true;
-}
-
-/* ---- AO d'un chunk (+1 de marge) ---- */
-function refreshChunkAO(ci, cj) {
-  const i0 = (ci - 1) * CHUNK, i1 = (ci + 2) * CHUNK, j0 = (cj - 1) * CHUNK, j1 = (cj + 2) * CHUNK;
-  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) for (let k = 0; k < 64; k++) { const b = blockAt(i, j, k); if (b) computeAO(b); }
-}
-
-/* ---- Décoration différée : les arbres (et l'AO) ne sont finalisés que lorsque
-       le chunk ET ses 8 voisins sont générés (les canopées débordent).  Cela évite
-       de redécorer 9× la même zone à chaque chargement de chunk. ---- */
-const decoPending = new Set();        // "ci,cj" prêts à être décorés (3×3 chargé)
-const decoDone = new Set();           // "ci,cj" déjà décorés
-
-/* ---- Chargement / déchargement ---- */
-function ensureChunk(ci, cj) {
-  const key = chunkKey(ci, cj);
-  if (loadedChunks.has(key)) return;
-  loadedChunks.add(key);
-  const i0 = ci * CHUNK, j0 = cj * CHUNK;
-  if (LIGHT) LIGHT.bulk = true;                                        // ne pas marquer la boîte sale pour chaque bloc
-  for (let j = j0; j < j0 + CHUNK; j++) for (let i = i0; i < i0 + CHUNK; i++) generateColumn(i, j);
-  if (LIGHT) LIGHT.bulk = false;
-  // Réapplique les modifications du joueur dans ce chunk (journal de sauvegarde)
-  for (const [ekey, etype] of edits) {
-    const [i, j, k] = ekey.split(',').map(Number);
-    if (cellInChunk(i, j, ci, cj)) {
-      const ex = blockAt(i, j, k);
-      if (etype && TYPES[etype]) { if (ex) removeBlock(i, j, k); addBlock(i, j, k, etype); }
-      else if (ex) removeBlock(i, j, k);
-    }
-  }
-  placeStarterChest();
-  for (const t of TYPE_IDS) if (terrain[t].dirty) flushLayer(terrain[t]);
-  if (LIGHT) LIGHT.onChunkLoad(ci, cj);                                // marque la lumière sale (déférée)
-  // Programme la décoration de ce chunk et de ses voisins déjà chargés
-  for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++) {
-    const kk = chunkKey(cii, cjj);
-    if (loadedChunks.has(kk) && !decoDone.has(kk)) decoPending.add(kk);
-  }
-}
-/** Décore (arbres + AO) jusqu'à `budget` chunks dont le voisinage 3×3 est chargé. */
-function updateDeco(budget) {
-  while (budget-- > 0 && decoPending.size) {
-    let processed = false;
-    for (const key of decoPending) {
-      const [ci, cj] = key.split(',').map(Number);
-      let ready = true;
-      for (let cjj = cj - 1; cjj <= cj + 1 && ready; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
-        if (!loadedChunks.has(chunkKey(cii, cjj))) { ready = false; break; }
-      if (!ready) continue;                                            // pas encore de voisinage complet
-      decorateTrees(ci, cj);
-      refreshChunkAO(ci, cj);
-      decoPending.delete(key);
-      decoDone.add(key);
-      processed = true;
-      break;
-    }
-    if (!processed) break;                                             // rien de prêt pour l'instant
-  }
-}
-function unloadChunk(ci, cj) {
-  const key = chunkKey(ci, cj);
-  if (!loadedChunks.has(key)) return;
-  loadedChunks.delete(key);
-  decoDone.delete(key); decoPending.delete(key);
-  const i0 = ci * CHUNK, j0 = cj * CHUNK;
-  for (let j = j0; j < j0 + CHUNK; j++) for (let i = i0; i < i0 + CHUNK; i++) for (let k = 0; k < 64; k++) {
-    const b = blockAt(i, j, k);
-    if (b) removeBlock(i, j, k);
-  }
-  refreshChunkAO(ci, cj);
-  if (LIGHT) LIGHT.onChunkUnload(ci, cj);
-}
-
-/** Charge/décharge les chunks autour du joueur, avec un budget par frame (anti-saccades).
-    Le chunk du joueur est TOUJOURS garanti chargé (le sol existe sous ses pieds). */
-function updateChunks(px, pz, force = false) {
-  const c = worldToCell(px, 0, pz), pc = chunkOf(c.i, c.j);
-  if (!loadedChunks.has(chunkKey(pc.ci, pc.cj))) ensureChunk(pc.ci, pc.cj);   // garantie : chunk du joueur
-  for (let cj = pc.cj - LOAD_RADIUS; cj <= pc.cj + LOAD_RADIUS; cj++)
-    for (let ci = pc.ci - LOAD_RADIUS; ci <= pc.ci + LOAD_RADIUS; ci++) {
-      const key = chunkKey(ci, cj);
-      if (!loadedChunks.has(key) && !loadQueue.includes(key)) loadQueue.push(key);
-    }
-  for (const key of loadedChunks) {
-    const [ci, cj] = key.split(',').map(Number);
-    if ((Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) && !unloadQueue.includes(key)) unloadQueue.push(key);
-  }
-  let budget = force ? 400 : 4;
-  while (budget-- > 0 && loadQueue.length) {
-    const key = loadQueue.shift();
-    if (!loadedChunks.has(key)) { const [ci, cj] = key.split(',').map(Number); ensureChunk(ci, cj); }
-  }
-  // Déchargement immédiat (peu coûteux, hors de vue) : jamais de retard de mémoire.
-  while (unloadQueue.length) {
-    const key = unloadQueue.shift();
-    if (loadedChunks.has(key)) {
-      const [ci, cj] = key.split(',').map(Number);
-      if (Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) unloadChunk(ci, cj);
-    }
-  }
-  updateDeco(force ? 10000 : 2);                                 // arbres + AO différés (budget par frame)
-}
-/** Chargement SYNCHRONE de tout le rayon (spawn, tp, restauration de sauvegarde). */
-function ensureChunksAround(px, pz, force = false) {
-  const c = worldToCell(px, 0, pz), pc = chunkOf(c.i, c.j);
-  for (let cj = pc.cj - LOAD_RADIUS; cj <= pc.cj + LOAD_RADIUS; cj++)
-    for (let ci = pc.ci - LOAD_RADIUS; ci <= pc.ci + LOAD_RADIUS; ci++) ensureChunk(ci, cj);
-  for (const key of [...loadedChunks]) {
-    const [ci, cj] = key.split(',').map(Number);
-    if (Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) unloadChunk(ci, cj);
-  }
-  updateDeco(10000);                                             // finalise toute la décoration du rayon
-  for (const b of blocks.values()) computeAO(b);                 // AO complète (les arbres ont pu changer les voisinages)
-  for (const t of TYPE_IDS) flushLayer(terrain[t]);
-}
-
-/** Purge complète du monde chargé (blocs, couches, entités, lumière) — conserve `edits`. */
-function resetLoadedWorld() {
-  while (mobs.length) removeMob(mobs.length - 1);
-  for (const it of items) scene.remove(it.mesh); items.length = 0;
-  if (typeof primedTNT !== 'undefined') { for (const e of primedTNT) scene.remove(e.mesh); primedTNT.length = 0; }
-  if (typeof arrows !== 'undefined') { for (const a of arrows) scene.remove(a.mesh); arrows.length = 0; }
-  if (typeof CHESTS !== 'undefined') { CHESTS.clear(); openChestKey = null; }
-  blocks.clear();
-  for (const t of TYPE_IDS) { const L = terrain[t]; L.mesh.count = 0; L.idxToKey.length = 0; if (L.depthPre) L.depthPre.count = 0; L.dirty = true; }
-  loadedChunks.clear(); loadQueue.length = 0; unloadQueue.length = 0;
-  decoPending.clear(); decoDone.clear();
-  pending.clear();
-  starterPlaced = false; STARTER_CHEST = null;
-  if (LIGHT) LIGHT.reset();
-}
-
-/* ---- Génération initiale (autour du spawn 0,0) ---- */
 function generateWorld() {
-  const fromURL = seedFromURL();
-  setWorldSeed(fromURL !== null ? fromURL : ((Math.random() * 0x7fffffff) | 0));
-  try {
-    const u = new URL(location.href);
-    if (u.searchParams.get('seed') !== String(worldSeed)) { u.searchParams.set('seed', worldSeed); history.replaceState(null, '', u.toString()); }
-  } catch {}
-  updateSeedLine();
-  ensureChunksAround(0, 0, true);
 }
 generateWorld();
-/* ===== End extension: worldgen.js ===== */
-
-
-
-/* ===== PrismCraft extension: lighting.js ===== */
-/* =====================================================================
-   6c. ÉCLAIRAGE VOXEL « MINECRAFT » (lumière du ciel + lumière des blocs)
-   ---------------------------------------------------------------------
-   Minecraft stocke, pour chaque cellule d'air, deux niveaux 0..15 :
-     • SKY   : 15 sous le ciel ouvert, propagé dans les grottes avec −1 par
-               pas (−2 de plus dans l'eau, −1 dans les feuilles) ;
-     • BLOCK : émis par les sources (torche 14, glowstone 15, lave 15…),
-               propagé de la même façon.
-   La luminosité finale d'une face = max(sky × jour, block) passée dans la
-   courbe de Minecraft  b = (1−x)/(3x+1), x = 1 − niveau/15.
-
-   Monde INFINI : les tableaux de lumière sont stockés PAR CHUNK (16×16×64).
-   Le BFS de propagation traverse les frontières de chunk via l'index global
-   (i,j,k) → chunk ; les cellules hors des chunks chargés sont traitées comme
-   ciel ouvert (sky 15) / obscurité (blk 0). Les chargements/déchargements de
-   chunks marquent des régions « sales » qui sont recalculées UNE FOIS PAR
-   FRAME (LIGHT.update), jamais de façon synchrone par chunk.
-   ===================================================================== */
-const LIGHT_KMAX = 64;
-const LIGHT_U = { uSkyLight: { value: 1 } };                 // uniform partagé par toutes les couches
-{
-  const CS = CHUNK, CN = CS * CS * LIGHT_KMAX;
-  const chunks = new Map();                                  // "ci,cj" → { ci, cj, sky, blk, opac, src }
-  const dirty = { i0: Infinity, i1: -Infinity, j0: Infinity, j1: -Infinity, any: false };
-  const lightDirtyChunks = new Set();                        // "ci,cj" à recalculer (chargement/déchargement)
-  const chunkKey = (ci, cj) => ci + ',' + cj;
-  const chunkOf = (i, j) => ({ ci: Math.floor(i / CS), cj: Math.floor(j / CS) });
-
-  function newChunk(ci, cj) {
-    return { ci, cj, sky: new Uint8Array(CN), blk: new Uint8Array(CN), opac: new Uint8Array(CN), src: new Uint8Array(CN) };
-  }
-  function chunkAt(i, j) { const c = chunkOf(i, j); return chunks.get(chunkKey(c.ci, c.cj)); }
-  const idOf = (li, lj, k) => (k * CS + lj) * CS + li;
-
-  /** Code d'opacité d'un type : 255 opaque · sinon atténuation supplémentaire par pas. */
-  function opacityOf(type) {
-    if (!type) return 0;
-    const d = TYPES[type];
-    if (d.fluid) return d.fam === 'water' ? 2 : 0;
-    if (d.passable || d.plant) return 0;
-    if (type === 'leaves') return 1;
-    if (d.transparent) return 0;
-    return 255;
-  }
-  const opacAt = (i, j, k) => {
-    if (k < 0 || k >= LIGHT_KMAX) return 0;
-    const ch = chunkAt(i, j); if (!ch) return 0;
-    return ch.opac[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
-  };
-  const skyAt = (i, j, k) => {
-    if (k < 0) return 0;
-    if (k >= LIGHT_KMAX) return 15;
-    const ch = chunkAt(i, j); if (!ch) return 15;            // chunk non chargé = ciel ouvert
-    return ch.sky[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
-  };
-  const blkAt = (i, j, k) => {
-    if (k < 0 || k >= LIGHT_KMAX) return 0;
-    const ch = chunkAt(i, j); if (!ch) return 0;
-    return ch.blk[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
-  };
-
-  /* BFS trans-chunk : file de [chunk, idLocal] pour éviter toute alloc de clé. */
-  const queue = [];
-  function propagate(arrKey) {
-    let head = 0;
-    while (head < queue.length) {
-      const ch = queue[head++], id = queue[head++];
-      const L = ch[arrKey][id]; if (L <= 1) continue;
-      const li = id % CS, lj = ((id / CS) | 0) % CS, k = (id / (CS * CS)) | 0;
-      const i = ch.ci * CS + li, j = ch.cj * CS + lj;
-      const nj = isUp(i, j) ? j - 1 : j + 1;
-      // i±1 (même chunk sauf aux bords), voisin j (peut changer de chunk), k±1 (même chunk)
-      const check = (ni, njj, nk) => {
-        if (nk < 0 || nk >= LIGHT_KMAX) return;
-        let nch = ch, nli = ni - ch.ci * CS, nlj = njj - ch.cj * CS;
-        if (nli < 0 || nli >= CS || nlj < 0 || nlj >= CS) {
-          const nc = chunkOf(ni, njj);
-          nch = chunks.get(chunkKey(nc.ci, nc.cj)); if (!nch) return;
-          nli = ni - nch.ci * CS; nlj = njj - nch.cj * CS;
-        }
-        const nid = idOf(nli, nlj, nk);
-        const op = nch.opac[nid];
-        if (op === 255) return;
-        const nl = L - 1 - op;
-        if (nl > nch[arrKey][nid]) { nch[arrKey][nid] = nl; queue.push(nch, nid); }
-      };
-      check(i - 1, j, k); check(i + 1, j, k); check(i, nj, k); check(i, j, k + 1); check(i, j, k - 1);
-    }
-  }
-  /** Recalcule la lumière pour un ensemble de chunks chargés (clés "ci,cj"). */
-  function recomputeSet(regionKeys) {
-    for (const key of regionKeys) {
-      let ch = chunks.get(key);
-      if (!ch) { const [ci, cj] = key.split(',').map(Number); ch = newChunk(ci, cj); chunks.set(key, ch); }
-      ch.sky.fill(0); ch.blk.fill(0);
-      for (let lj = 0; lj < CS; lj++) for (let li = 0; li < CS; li++) {
-        let v = 15;
-        for (let k = LIGHT_KMAX - 1; k >= 0; k--) {
-          const id = idOf(li, lj, k);
-          if (v > 0) { const op = ch.opac[id]; if (op === 255) v = 0; else v = Math.max(0, v - op); }
-          ch.sky[id] = v;
-        }
-      }
-    }
-    queue.length = 0;
-    for (const key of regionKeys) { const ch = chunks.get(key); for (let id = 0; id < CN; id++) if (ch.sky[id] > 1) queue.push(ch, id); }
-    propagate('sky');
-    // Lumière des blocs : on re-sème depuis TOUTES les sources des chunks chargés,
-    // pour que la lumière d'une torche traverse les frontières de chunk rechargées.
-    queue.length = 0;
-    for (const key of loadedChunks) { const ch = chunks.get(key); if (!ch) continue; for (let id = 0; id < CN; id++) if (ch.src[id]) { ch.blk[id] = ch.src[id]; queue.push(ch, id); } }
-    propagate('blk');
-  }
-  /** Recalcule les chunks chargés qui intersectent la boîte absolue [i0..i1]×[j0..j1]. */
-  function recomputeRegion(i0, j0, i1, j1) {
-    const ci0 = Math.floor(i0 / CS), ci1 = Math.floor(i1 / CS), cj0 = Math.floor(j0 / CS), cj1 = Math.floor(j1 / CS);
-    const region = [];
-    for (const key of loadedChunks) {
-      const [ci, cj] = key.split(',').map(Number);
-      if (ci >= ci0 && ci <= ci1 && cj >= cj0 && cj <= cj1) region.push(key);
-    }
-    recomputeSet(region);
-  }
-
-  /* Écrit les attributs skyL / blkL d'un prisme (même repérage que computeAO). */
-  const _lc = new THREE.Vector3(), _ld = new THREE.Vector3();
-  function writeLight(b) {
-    const layer = b.layer; if (!layer.skyL) return;
-    const own = TYPES[b.type].light || 0, op = opacAt(b.i, b.j, b.k), ownS = op === 255 ? 0 : skyAt(b.i, b.j, b.k), ownB = Math.max(own, op === 255 ? 0 : blkAt(b.i, b.j, b.k));
-    let s = Math.max(ownS, skyAt(b.i, b.j, b.k + 1)) + Math.max(ownS, skyAt(b.i, b.j, b.k - 1)) * 16;
-    let l = Math.max(ownB, blkAt(b.i, b.j, b.k + 1)) + Math.max(ownB, blkAt(b.i, b.j, b.k - 1)) * 16;
-    cellCenter(b.i, b.j, b.k, _lc);
-    const q = isUp(b.i, b.j) ? Q_UP : Q_DOWN;
-    let mul = 256;
-    for (let f = 0; f < 3; f++) {
-      _ld.copy(AO_FACE_DIRS[f]).applyQuaternion(q);
-      const c = worldToCell(_lc.x + _ld.x * 0.45, _lc.y, _lc.z + _ld.z * 0.45);
-      s += Math.max(ownS, skyAt(c.i, c.j, c.k)) * mul; l += Math.max(ownB, blkAt(c.i, c.j, c.k)) * mul; mul *= 16;
-    }
-    if (layer.skyL.array[b.idx] !== s) { layer.skyL.array[b.idx] = s; layer.skyL.needsUpdate = true; }
-    if (layer.blkL.array[b.idx] !== l) { layer.blkL.array[b.idx] = l; layer.blkL.needsUpdate = true; }
-  }
-  /** Ré-écrit les attributs de tous les prismes de la boîte (+1 de marge). */
-  function refreshAttribs(i0, j0, i1, j1) {
-    for (const b of blocks.values()) if (b.i >= i0 - 1 && b.i <= i1 + 1 && b.j >= j0 - 1 && b.j <= j1 + 1) writeLight(b);
-  }
-
-  LIGHT = {
-    ready: false,
-    bulk: false,
-    /** Appelé par addBlock / removeBlock : maintient opac / src et agrandit la boîte sale. */
-    onChange(i, j, k, type) {
-      if (k < 0 || k >= LIGHT_KMAX) return;
-      const c = chunkOf(i, j), key = chunkKey(c.ci, c.cj);
-      let ch = chunks.get(key);
-      if (!ch) { ch = newChunk(c.ci, c.cj); chunks.set(key, ch); }
-      const id = idOf(i - c.ci * CS, j - c.cj * CS, k);
-      ch.opac[id] = opacityOf(type); ch.src[id] = (type && TYPES[type].light) || 0;
-      if (!this.ready || this.bulk) return;
-      dirty.i0 = Math.min(dirty.i0, i); dirty.i1 = Math.max(dirty.i1, i); dirty.j0 = Math.min(dirty.j0, j); dirty.j1 = Math.max(dirty.j1, j); dirty.any = true;
-    },
-    /** Chunk fraîchement généré : seule SA lumière doit être calculée (le ciel est
-        local par colonne ; les sources du chunk sont resemées globalement → les
-        voisins reçoivent la lumière par propagation). */
-    onChunkLoad(ci, cj) {
-      lightDirtyChunks.add(chunkKey(ci, cj));
-    },
-    /** Chunk déchargé : libère ses tableaux et marque les voisins. */
-    onChunkUnload(ci, cj) {
-      chunks.delete(chunkKey(ci, cj));
-      for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
-        if (loadedChunks.has(chunkKey(cii, cjj))) lightDirtyChunks.add(chunkKey(cii, cjj));
-    },
-    /** Calcul complet (après génération / restauration de sauvegarde). */
-    computeAll() {
-      const t0 = performance.now();
-      recomputeSet([...loadedChunks]);
-      for (const b of blocks.values()) writeLight(b);
-      this.ready = true; dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
-      lightDirtyChunks.clear();
-      this.lastMs = performance.now() - t0;
-    },
-    /** À appeler chaque frame : recalculs différés (chunks + modifications du joueur). */
-    update() {
-      const t0 = performance.now();
-      // 1. lumière des chunks chargés/déchargés (une passe par frame)
-      if (lightDirtyChunks.size) {
-        const region = [...lightDirtyChunks];
-        let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity;
-        for (const key of region) {
-          const [ci, cj] = key.split(',').map(Number);
-          i0 = Math.min(i0, ci * CS); i1 = Math.max(i1, (ci + 1) * CS - 1);
-          j0 = Math.min(j0, cj * CS); j1 = Math.max(j1, (cj + 1) * CS - 1);
-        }
-        recomputeSet(region);
-        lightDirtyChunks.clear();
-        refreshAttribs(i0, j0, i1, j1);
-        this.lastMs = performance.now() - t0;
-        return;                                             // une seule passe lourde par frame
-      }
-      // 2. boîte sale des modifications du joueur
-      if (dirty.any) {
-        const i0 = dirty.i0 - 16, i1 = dirty.i1 + 16, j0 = dirty.j0 - 16, j1 = dirty.j1 + 16;
-        recomputeRegion(i0, j0, i1, j1);
-        refreshAttribs(i0, j0, i1, j1);
-        dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
-        this.lastMs = performance.now() - t0;
-      }
-    },
-    /** Purge complète (nouvelle partie / changement de seed). */
-    reset() {
-      chunks.clear(); lightDirtyChunks.clear(); dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
-    },
-    /** Facteur jour (0..1) → uniform ; la nuit garde un plancher « clair de lune » de 0.3. */
-    setDaylight(d) { LIGHT_U.uSkyLight.value = 0.3 + 0.7 * d; },
-    /** Niveaux (0..15) à une position monde. */
-    levelsAt(x, y, z) { const c = worldToCell(x, y, z); return [skyAt(c.i, c.j, c.k), blkAt(c.i, c.j, c.k)]; },
-    /** Luminosité 0.05..1 à une position (pour teinter les entités : mobs, objets). */
-    brightnessAt(x, y, z) {
-      const c = worldToCell(x, y, z);
-      const lv = Math.max(skyAt(c.i, c.j, c.k) / 15 * LIGHT_U.uSkyLight.value, blkAt(c.i, c.j, c.k) / 15);
-      const xx = 1 - lv; return ((1 - xx) / (3 * xx + 1)) * 0.95 + 0.05;
-    },
-    lastMs: 0, chunks,
-  };
-}
-// Remplit opac/src pour le monde déjà généré (les blocs ont été ajoutés avant que LIGHT existe), puis calcule tout
-for (const b of blocks.values()) LIGHT.onChange(b.i, b.j, b.k, b.type);
-LIGHT.computeAll();
-/* ===== End extension: lighting.js ===== */
 
 /* Plus de socle plein sous le monde : avec les chunks, le monde n'a plus de bord ;
    en créatif on peut percer la bedrock (k = 0) et voir le vide en dessous. */
@@ -2454,7 +1508,7 @@ const isCreative = () => gameMode === 'creative';
    pixel rasterisé), les autres retrouvent scale 1.  Seuls les InstancedMesh
    dont au moins une instance a changé sont ré-envoyés au GPU.
    ===================================================================== */
-let VIEW_DIST_SQ = VIEW_DISTANCE * VIEW_DISTANCE;
+const VIEW_DIST_SQ = VIEW_DISTANCE * VIEW_DISTANCE;
 const _lastCullPos = new THREE.Vector3(Infinity, Infinity, Infinity);
 const _cp = new THREE.Vector3();
 let culledCount = 0, lastCullMs = 0;
@@ -3058,7 +2112,7 @@ function updateHeldItem() {
  */
 function updateFirstPersonArm(dt) {
   const p = player;
-  const bob = (typeof OPTIONS !== 'undefined' && !OPTIONS.bobbing) ? 0 : Math.min(1, p.hSpeed / PLAYER.speed) * (p.onGround ? 1 : 0.3);
+  const bob = Math.min(1, p.hSpeed / PLAYER.speed) * (p.onGround ? 1 : 0.3);
   const bx = Math.sin(anim.walkPhase) * 0.04 * bob;
   const by = -Math.abs(Math.cos(anim.walkPhase)) * 0.035 * bob;
   const breathe = Math.sin(anim.t * 1.5) * 0.004;
@@ -3601,17 +2655,16 @@ window.addEventListener('blur', () => mouseButtons.fill(false));
    la progression est affichée par des fissures sur le contour (opacité) ---- */
 let mining = null;                                                        // { key, t, need }
 function updateMining(dt) {
-  if (!mouseButtons[0] || !controls.isLocked || inventoryOpen || isCreative() || !target || player.dead) { mining = null; highlight.material.color.setHex(0x111111); crack.visible = false; return; }
+  if (!mouseButtons[0] || !controls.isLocked || inventoryOpen || isCreative() || !target || player.dead) { mining = null; highlight.material.color.setHex(0x111111); return; }
   const { i, j, k } = target.hit, key = cellKey(i, j, k);
   const b = blocks.get(key); if (!b) { mining = null; return; }
   if (!mining || mining.key !== key) mining = { key, t: 0, need: miningTime(b.type) };
   mining.t += dt;
   anim.swing = Math.min(anim.swing, 0.5);                                 // le bras continue de frapper
   const f = mining.t / mining.need;
-  updateCrack(f, i, j, k);
   highlight.material.color.setRGB(0.1 + f * 0.9, 0.1 + f * 0.6, 0.1);
   if (Math.random() < 0.3) spawnParticles(cellCenter(i, j, k, new THREE.Vector3()), TYPES[b.type].color, 1, 1.5, 0.4);
-  if (f >= 1) { breakBlock(i, j, k, b.type); mining = null; crack.visible = false; }
+  if (f >= 1) { breakBlock(i, j, k, b.type); mining = null; }
 }
 /**
  * Temps de minage (s) d'un bloc avec l'objet tenu, règles 1.8 simplifiées :
@@ -3637,11 +2690,9 @@ function canHarvest(def) {
 }
 /** Casse un bloc : survie → il tombe au sol sous forme d'objet (drop) + épuisement ; créatif → disparaît. */
 function breakBlock(i, j, k, type) {
-  if (type === 'chest' && typeof dropChestContent === 'function') dropChestContent(i, j, k);
   if (!removeBlock(i, j, k, true)) { flashHint('La bedrock est indestructible en survie'); return; }
   const def = TYPES[type];
-  spawnParticles(cellCenter(i, j, k, new THREE.Vector3()), def.color, 10, 2.5, 0.5);  SFX.play('break', { pos: cellCenter(i, j, k, new THREE.Vector3()), type });
-
+  spawnParticles(cellCenter(i, j, k, new THREE.Vector3()), def.color, 10, 2.5, 0.5);
   if (!isCreative()) {
     addExhaustion(0.005);
     const drop = def.drop === undefined ? type : def.drop;
@@ -3667,10 +2718,7 @@ document.addEventListener('mousedown', e => {
   else if (e.button === 1) { e.preventDefault(); pickBlock(); }          // clic molette : Pick Block
   else if (e.button === 2 && target.place) {
     // Blocs interactifs : table de craft → grille 3×3, four → interface de cuisson (sneak pour poser dessus quand même)
-    const heldForUse = heldId();
-    if (target.block?.type === 'tnt' && ITEMS[heldForUse]?.igniter) { primeTNT(target.hit.i, target.hit.j, target.hit.k); return; }
     const tb = target.block && TYPES[target.block.type];
-    if (tb?.container && !player.sneaking) { openChest(target.hit); return; }
     if (tb?.interact && !player.sneaking) { openInventory(tb.interact === 'craft' ? 'table' : 'furnace'); return; }
     const id = heldId();
     if (!id || !isBlockId(id)) return;                                     // épée / nourriture : le clic droit est géré dans updatePlayer
@@ -3687,7 +2735,7 @@ document.addEventListener('mousedown', e => {
     if (addBlock(i, j, k, id)) {
       const blocksMob = near.some(m => !stuckBefore.has(m) && collidesEnt(m.pos.x, m.pos.y, m.pos.z, m.height, m.offsets));
       if (collides(player.pos.x, player.pos.y, player.pos.z) || blocksMob) removeBlock(i, j, k);
-      else { recordEdit(i, j, k, id); consumeHeld(); SFX.play('place', { pos: cellCenter(i, j, k, new THREE.Vector3()), type: id }); }
+      else { recordEdit(i, j, k, id); consumeHeld(); }
     }
   }
 });
@@ -4113,229 +3161,16 @@ const MOB_DEFS = {
   pig:    { name: 'Cochon', hp: 10, speed: 1.6, xp: 2, drops: [['porkchop', 1, 3]], cooked: 'cooked_porkchop' },
   cow:    { name: 'Vache',  hp: 10, speed: 1.4, xp: 2, drops: [['beef', 1, 3], ['leather', 0, 2]], cooked: 'cooked_beef' },
 };
-
-/* ===== PrismCraft extension: mobs_extra.js ===== */
-/* =====================================================================
-   16i. MOBS SUPPLÉMENTAIRES 100 % PRISMES : Creeper, Squelette, Mouton, Poule
-   ---------------------------------------------------------------------
-   Modèles (CylinderGeometry(r, r, h, 3) uniquement, via prismMesh / limbPrism) :
-     • CREEPER : corps vert haut (4×12×8 px → prisme aplati), tête avec la
-       face triste (yeux et bouche = prismes plats noirs), 4 pattes courtes ;
-       IA : approche silencieuse, à < 3 u déclenche la mèche (1,5 s, sifflement,
-       gonflement + clignotement blanc) puis explode(pos, 3) ; recule si le
-       joueur s'éloigne (> 6 u) avant la fin → mèche annulée ; brûle-pas au
-       soleil (comme dans MC) mais despawn de jour à distance.
-     • SQUELETTE : buildSteve(palette os) avec membres fins ; tient un arc ;
-       IA : garde 8-12 u de distance, tire une flèche toutes les 2 s si ligne
-       de vue (projectile prisme, gravité, dégâts 2-4, se plante dans les
-       blocs) ; brûle au soleil comme le zombie.
-     • MOUTON : quadrupède laineux (corps large blanc / coloré, tête sombre) ;
-       clic droit… non : les moutons donnent laine + mouton à la mort ;
-       broutent (tête baissée quand idle).
-     • POULE : petit bipède blanc, bec jaune, crête rouge, chute lente
-       (battement d'ailes), pond un œuf toutes les ~2 min.
-   Spawn : creepers/squelettes la nuit avec les zombies (répartition
-   50 % zombie / 30 % squelette / 20 % creeper) ; moutons/poules avec les
-   passifs du départ.
-   ===================================================================== */
-const SKELETON_PALETTE = { skin: 0xd8d8d8, shirt: 0xc8c8c8, pants: 0xbcbcbc, shoes: 0xa8a8a8, hair: 0xc0c0c0, eye: 0x202020, iris: 0x202020, nose: 0x9a9a9a, mouth: 0x505050 };
-Object.assign(MOB_DEFS, {
-  creeper:  { name: 'Creeper',  hp: 20, speed: 2.4, dmg: 0, xp: 5, hostile: true, drops: [['gunpowder', 0, 2]], sound: 'fuse', creeper: true },
-  skeleton: { name: 'Squelette', hp: 20, speed: 2.4, dmg: 3, xp: 5, hostile: true, drops: [['bone', 0, 2], ['arrow', 0, 2]], sound: 'skeleton', ranged: true },
-  sheep:    { name: 'Mouton',   hp: 8,  speed: 1.3, xp: 1, drops: [['wool', 1, 1], ['mutton', 1, 2]], cooked: 'cooked_mutton', sound: 'sheep' },
-  chicken:  { name: 'Poule',    hp: 4,  speed: 1.2, xp: 1, drops: [['feather', 0, 2], ['chicken', 1, 1]], cooked: 'cooked_chicken', sound: 'pop', chicken: true },
-});
-const WOOL_COLORS = ['wool', 'wool', 'wool', 'wool', 'wool_black', 'wool_yellow', 'wool_red', 'wool_blue', 'wool_green'];
-
-function buildCreeper() {
-  const skin = new THREE.MeshLambertMaterial({ color: 0x4caa3c }), dark = new THREE.MeshLambertMaterial({ color: 0x0a0a0a });
-  const group = new THREE.Group(), rig = { legs: [] };
-  const legH = 0.38, bodyH = 0.75, bodyW = 0.5;
-  const torso = prismMesh(bodyW, bodyH, skin, { sz: 0.55 }); torso.position.y = legH + bodyH / 2; group.add(torso); rig.torso = torso;
-  const headP = new THREE.Group(); headP.position.set(0, legH + bodyH, 0); group.add(headP); rig.head = headP;
-  const head = prismMesh(0.5, 0.5, skin, { sz: 0.9 }); head.position.y = 0.25; headP.add(head);
-  // Visage : yeux carrés-triangles + bouche en « ᗣ » (3 prismes plats noirs)
-  for (const [x, y, w] of [[-0.12, 0.34, 0.11], [0.12, 0.34, 0.11], [0, 0.16, 0.1], [-0.07, 0.07, 0.07], [0.07, 0.07, 0.07]]) {
-    const e = prismMesh(w, 0.015, dark, { sz: 1 }); e.rotation.x = Math.PI / 2; e.position.set(x, y, 0.27); headP.add(e);
-  }
-  for (const [sx, sz] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
-    const piv = new THREE.Group(); piv.position.set(sx * 0.13, legH, sz * 0.2);
-    const leg = prismMesh(0.2, legH, skin, { sz: 0.8 }); leg.position.y = -legH / 2; piv.add(leg); group.add(piv); rig.legs.push(piv);
-  }
-  group.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-  return { group, rig, height: legH + bodyH + 0.5, radius: 0.3, quadLegs: true };
-}
-function buildSheep() {
-  const wool = new THREE.MeshLambertMaterial({ color: 0xececec }), skin = new THREE.MeshLambertMaterial({ color: 0xb59a86 }), dark = new THREE.MeshLambertMaterial({ color: 0x202020 });
-  const group = new THREE.Group(), rig = { legs: [] };
-  const L = 1.0, H = 0.7, W = 0.7, legH = 0.5;
-  const torso = prismMesh(W, L, wool, { axis: 'z', sz: H / (W * 0.5) * 0.5 }); torso.position.y = legH + H * 0.45; group.add(torso); rig.torso = torso; rig.woolMat = wool;
-  const headP = new THREE.Group(); headP.position.set(0, legH + H * 0.75, L * 0.45); group.add(headP); rig.head = headP;
-  const head = prismMesh(0.4, 0.4, skin, { sz: 0.9 }); head.position.set(0, 0, 0.18); headP.add(head);
-  const fleece = prismMesh(0.45, 0.2, wool, { sz: 0.9 }); fleece.position.set(0, 0.22, 0.1); headP.add(fleece);
-  for (const sx of [-1, 1]) { const eye = prismMesh(0.07, 0.02, dark, { sz: 1 }); eye.rotation.x = Math.PI / 2; eye.position.set(sx * 0.11, 0.05, 0.36); headP.add(eye); }
-  for (const [sx, sz] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
-    const piv = new THREE.Group(); piv.position.set(sx * W * 0.3, legH, sz * L * 0.33);
-    const leg = prismMesh(0.18, legH, skin, { sz: 0.85 }); leg.position.y = -legH / 2; piv.add(leg);
-    const tuft = prismMesh(0.22, legH * 0.3, wool, { sz: 0.9 }); tuft.position.y = -legH * 0.15; piv.add(tuft);
-    group.add(piv); rig.legs.push(piv);
-  }
-  group.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-  return { group, rig, height: legH + H + 0.1, radius: 0.36 };
-}
-function buildChicken() {
-  const white = new THREE.MeshLambertMaterial({ color: 0xf4f4f4 }), yellow = new THREE.MeshLambertMaterial({ color: 0xe8b83c }), red = new THREE.MeshLambertMaterial({ color: 0xc02020 }), dark = new THREE.MeshLambertMaterial({ color: 0x202020 });
-  const group = new THREE.Group(), rig = { legs: [] };
-  const legH = 0.28;
-  const torso = prismMesh(0.38, 0.5, white, { axis: 'z', sz: 0.9 }); torso.position.y = legH + 0.22; group.add(torso); rig.torso = torso;
-  const headP = new THREE.Group(); headP.position.set(0, legH + 0.42, 0.18); group.add(headP); rig.head = headP;
-  const head = prismMesh(0.22, 0.32, white, { sz: 0.9 }); head.position.y = 0.16; headP.add(head);
-  const beak = prismMesh(0.14, 0.08, yellow, { sz: 0.6 }); beak.position.set(0, 0.14, 0.17); headP.add(beak);
-  const wattle = prismMesh(0.08, 0.1, red, { sz: 0.6 }); wattle.position.set(0, 0.04, 0.15); headP.add(wattle);
-  for (const sx of [-1, 1]) { const eye = prismMesh(0.05, 0.02, dark, { sz: 1 }); eye.rotation.x = Math.PI / 2; eye.position.set(sx * 0.07, 0.22, 0.14); headP.add(eye); }
-  rig.wings = [];
-  for (const sx of [-1, 1]) { const wing = prismMesh(0.08, 0.34, white, { axis: 'z', sz: 1 }); wing.position.set(sx * 0.22, legH + 0.3, 0); group.add(wing); rig.wings.push(wing); }
-  for (const sx of [-1, 1]) {
-    const piv = new THREE.Group(); piv.position.set(sx * 0.08, legH, 0);
-    const leg = prismMesh(0.08, legH, yellow, { sz: 0.8 }); leg.position.y = -legH / 2; piv.add(leg); group.add(piv); rig.legs.push(piv);
-  }
-  rig.legs.push(rig.legs[0], rig.legs[1]);                                 // l'animateur attend 4 pattes
-  group.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-  return { group, rig, height: legH + 0.6, radius: 0.2 };
-}
-/** Modèle d'un mob supplémentaire (retourne null pour les types de base). */
-function buildExtraMob(kind) {
-  if (kind === 'creeper') return buildCreeper();
-  if (kind === 'sheep') return buildSheep();
-  if (kind === 'chicken') return buildChicken();
-  if (kind === 'skeleton') {
-    const { group, rig } = buildSteve(SKELETON_PALETTE);
-    group.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-    for (const p of [rig.armL, rig.armR, rig.legL, rig.legR]) p.scale.set(0.55, 1, 0.55);   // membres fins
-    rig.held.visible = false; rig.heldIcon.visible = true; rig.heldIcon.material = iconMat('bow');
-    rig.armL.rotation.x = rig.armR.rotation.x = -1.4;                                       // arc bandé
-    return { group, rig, height: 1.9, radius: 0.22, humanoid: true };
-  }
-  return null;
-}
-
-/* ---- Flèches (projectiles) : prisme fin, gravité, se plante dans un bloc, blesse joueur / mobs ---- */
-const arrows = [];
-const arrowMat = new THREE.MeshLambertMaterial({ color: 0xd8c8a0 });
-const arrowGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.6, 3, 1, false).toNonIndexed(); arrowGeo.rotateX(Math.PI / 2); arrowGeo.computeVertexNormals();
-function shootArrow(from, dir, speed, owner, dmg) {
-  const mesh = new THREE.Mesh(arrowGeo, arrowMat); mesh.position.copy(from); scene.add(mesh);
-  arrows.push({ mesh, pos: mesh.position, vel: dir.clone().multiplyScalar(speed), owner, dmg, life: 30, stuck: 0 });
-  SFX.play('bow', { pos: from });
-}
-const _ap = new THREE.Vector3();
-function updateArrows(dt) {
-  for (let n = arrows.length - 1; n >= 0; n--) {
-    const a = arrows[n]; a.life -= dt;
-    if (a.life <= 0) { scene.remove(a.mesh); arrows.splice(n, 1); continue; }
-    if (a.stuck) { if (a.owner === 'player' && !player.dead && a.pos.distanceToSquared(_ap.set(player.pos.x, player.pos.y + 0.9, player.pos.z)) < 1.2) { addToInventory('arrow', 1); refreshInv(); SFX.play('pop'); scene.remove(a.mesh); arrows.splice(n, 1); } continue; }
-    a.vel.y -= GRAVITY * 0.8 * dt;
-    const steps = 3, sx = a.vel.x * dt / steps, sy = a.vel.y * dt / steps, sz = a.vel.z * dt / steps;
-    for (let s = 0; s < steps && !a.stuck; s++) {
-      a.pos.x += sx; a.pos.y += sy; a.pos.z += sz;
-      const c = worldToCell(a.pos.x, a.pos.y, a.pos.z);
-      if (isSolid(c.i, c.j, c.k)) { a.stuck = 1; a.life = Math.min(a.life, 12); SFX.play('arrowhit', { pos: a.pos }); break; }
-      if (a.owner !== 'player') {
-        if (!player.dead && Math.abs(a.pos.x - player.pos.x) < 0.45 && Math.abs(a.pos.z - player.pos.z) < 0.45 && a.pos.y > player.pos.y && a.pos.y < player.pos.y + player.height) { damagePlayer(a.dmg, 'skeleton', a.owner.pos); scene.remove(a.mesh); arrows.splice(n, 1); a.stuck = 2; break; }
-      } else {
-        for (const m of mobs) if (!m.dying && Math.abs(a.pos.x - m.pos.x) < m.radius + 0.2 && Math.abs(a.pos.z - m.pos.z) < m.radius + 0.2 && a.pos.y > m.pos.y && a.pos.y < m.pos.y + m.height) {
-          m.health -= a.dmg; m.hurtT = 0.5; m.ai.fleeT = 3; m.ai.memory = 8; m.kb.set(a.vel.x * 0.15, 0, a.vel.z * 0.15);
-          spawnParticles(new THREE.Vector3(m.pos.x, m.pos.y + m.height * 0.6, m.pos.z), 0x9b1010, 6, 1.5); SFX.play(m.def.sound || 'hurt', { pos: m.pos });
-          if (m.health <= 0) killMob(m, true);
-          scene.remove(a.mesh); arrows.splice(n, 1); a.stuck = 2; break;
-        }
-      }
-    }
-    if (a.stuck === 2) continue;
-    if (a.pos.y < -20) { scene.remove(a.mesh); arrows.splice(n, 1); continue; }
-    a.mesh.lookAt(_ap.copy(a.pos).add(a.vel));
-  }
-}
-/* ---- Arc du joueur : clic droit maintenu = bander (0..1 en 1 s), relâcher = tirer (consomme 1 flèche sauf créatif) ---- */
-player.bowDraw = 0;
-function updateBow(dt) {
-  const held = heldId(), def = held && ITEMS[held];
-  const rmb = mouseButtons[2] && controls.isLocked && !inventoryOpen && !player.dead;
-  const hasArrow = isCreative() || HOTBAR.some(s => s && s.id === 'arrow') || INVENTORY.some(s => s && s.id === 'arrow');
-  if (def?.bow && rmb && hasArrow) { player.bowDraw = Math.min(1, player.bowDraw + dt); return; }
-  if (player.bowDraw > 0.15 && def?.bow) {
-    const f = player.bowDraw;
-    _eye.set(player.pos.x, player.pos.y + player.eye, player.pos.z); getViewDir(_dir);
-    shootArrow(_eye.clone().addScaledVector(_dir, 0.4), _dir, 12 + 28 * f, 'player', Math.round(2 + 7 * f * f));
-    if (!isCreative()) { const take = (arr) => { for (const s of arr) if (s && s.id === 'arrow') { s.n--; if (s.n <= 0) arr[arr.indexOf(s)] = null; return true; } return false; }; if (!take(HOTBAR)) take(INVENTORY); refreshInv(); }
-    anim.swing = 0;
-  }
-  player.bowDraw = 0;
-}
-
-/* ---- Comportements spécifiques (appelés depuis updateMobs pour chaque mob) ---- */
-function updateExtraMobAI(m, dt, distP) {
-  const ai = m.ai, def = m.def;
-  if (def.creeper) {
-    // Mèche : déclenchée au contact, annulée si le joueur s'éloigne
-    if (!isCreative() && !player.dead && distP < 3 && Math.abs(player.pos.y - m.pos.y) < 2.5 && ai.memory > 0) {
-      if (!m.fuse) { m.fuse = 0.001; SFX.play('fuse', { pos: m.pos, minGap: 0 }); }
-    } else if (m.fuse && distP > 6) m.fuse = 0;
-    if (m.fuse) {
-      m.fuse += dt;
-      const sw = 1 + m.fuse * 0.25; m.group.scale.set(sw, 1 + m.fuse * 0.12, sw);
-      for (const mat of m.mats) mat.emissive.setHex(Math.floor(m.fuse * 8) % 2 ? 0xffffff : 0x000000);
-      if (m.fuse >= 1.5) { const pos = new THREE.Vector3(m.pos.x, m.pos.y + 0.8, m.pos.z); m.dying = 10; removeMob(mobs.indexOf(m)); explode(pos, 3); return 'removed'; }
-      return 'stop';                                                       // immobile pendant la mèche
-    } else m.group.scale.setScalar(1);
-  }
-  if (def.ranged) {
-    // Squelette : garde ses distances (recul < 6 u, avance > 12 u) et tire toutes les 2 s
-    ai.shootCd = (ai.shootCd ?? 1) - dt;
-    if (ai.memory > 0 && !player.dead && !isCreative()) {
-      if (ai.shootCd <= 0 && distP < 16 && lineOfSight(new THREE.Vector3(m.pos.x, m.pos.y + 1.6, m.pos.z), new THREE.Vector3(player.pos.x, player.pos.y + 1.2, player.pos.z))) {
-        ai.shootCd = 2;
-        const from = new THREE.Vector3(m.pos.x, m.pos.y + 1.5, m.pos.z), to = new THREE.Vector3(player.pos.x, player.pos.y + 1.0, player.pos.z);
-        const d = to.distanceTo(from), dir = to.sub(from); dir.y += d * 0.045; dir.normalize();   // légère parabole
-        shootArrow(from, dir, 20, m, 2 + Math.floor(Math.random() * 3));
-        m.rig.armL.rotation.x = m.rig.armR.rotation.x = -1.9;
-      }
-      if (distP < 6) return 'retreat';
-      if (distP < 11) return 'strafe';
-    }
-  }
-  if (def.chicken) {
-    if (!m.onGround && m.vel.y < -1) m.vel.y = Math.max(m.vel.y, -1.2);                     // chute lente (ailes)
-    const flap = m.onGround ? 0 : Math.sin(anim.t * 30) * 0.8;
-    if (m.rig.wings) { m.rig.wings[0].rotation.z = -flap - 0.1; m.rig.wings[1].rotation.z = flap + 0.1; }
-    m.eggT = (m.eggT ?? 60 + Math.random() * 120) - dt;
-    if (m.eggT <= 0) { m.eggT = 120 + Math.random() * 120; spawnItem('egg', new THREE.Vector3(m.pos.x, m.pos.y + 0.3, m.pos.z), new THREE.Vector3(), 1); SFX.play('pop', { pos: m.pos }); }
-  }
-  if (m.kind === 'sheep' && ai.state === 'idle') m.rig.head.rotation.x = 0.7;                // broute
-  return null;
-}
-/** Le mouton reçoit une couleur de laine aléatoire (drop assorti). */
-function decorateExtraMob(m) {
-  if (m.kind === 'sheep') {
-    const w = WOOL_COLORS[Math.floor(Math.random() * WOOL_COLORS.length)];
-    m.woolType = w; m.def = { ...m.def, drops: [[w, 1, 1], ['mutton', 1, 2]] };
-    for (const mat of m.mats) if (mat.color.getHex() === 0xececec) mat.color.setHex(TYPES[w].color);
-  }
-}
-/** Tirage du type de monstre nocturne : 50 % zombie, 30 % squelette, 20 % creeper. */
-function pickHostileKind() { const r = Math.random(); return r < 0.5 ? 'zombie' : r < 0.8 ? 'skeleton' : 'creeper'; }
-/* ===== End extension: mobs_extra.js ===== */
-
 function spawnMob(kind, x, y, z) {
   const def = MOB_DEFS[kind];
-  let model = typeof buildExtraMob === 'function' ? buildExtraMob(kind) : null;
-  if (!model && kind === 'zombie') {
+  let model;
+  if (kind === 'zombie') {
     const { group, rig } = buildSteve(ZOMBIE_PALETTE);
     group.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
     rig.armL.rotation.x = rig.armR.rotation.x = -1.5;                     // bras tendus
     rig.held.visible = false; rig.heldIcon.visible = false;
     model = { group, rig, height: 1.9, radius: 0.22, humanoid: true };
-  } else if (!model) model = buildQuadruped(kind);
+  } else model = buildQuadruped(kind);
   // Matériaux clonés par mob : permet le flash rouge / l'embrasement individuel
   const mats = [];
   model.group.traverse(o => { if (o.isMesh) { o.material = o.material.clone(); mats.push(o.material); } });
@@ -4348,7 +3183,6 @@ function spawnMob(kind, x, y, z) {
     walk: 0, hSpeed: 0, dying: 0, eye: 1.6,
   };
   mobs.push(mob);
-  if (typeof decorateExtraMob === 'function') decorateExtraMob(mob);
   registerHitbox(mob, def.hostile ? 0xff4040 : 0x40ff90);
   return mob;
 }
@@ -4367,7 +3201,7 @@ function spawnOnePassive() {
     const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1.5) continue;
     const c = worldToCell(x, y - 0.5, z); if (blockAt(c.i, c.j, c.k)?.type !== 'grass') continue;
     if (Math.hypot(x - player.pos.x, z - player.pos.z) < 6) continue;
-    spawnMob((() => { const r = Math.random(); return r < 0.35 ? 'pig' : r < 0.65 ? 'cow' : r < 0.83 ? 'sheep' : 'chicken'; })(), x, y, z);
+    spawnMob(Math.random() < 0.5 ? 'pig' : 'cow', x, y, z);
     return true;
   }
   return false;
@@ -4385,8 +3219,7 @@ function updateZombieSpawning(dt) {
         const a = Math.random() * Math.PI * 2, r = 18 + Math.random() * 20;
         const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
         const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1) continue;
-        const hostile = typeof pickHostileKind === 'function' ? pickHostileKind() : 'zombie';
-    spawnMob(hostile, x, y, z); chatLog(`§7Un ${MOB_DEFS[hostile].name.toLowerCase()} rôde dans les parages…`); break;
+        spawnMob('zombie', x, y, z); chatLog('§7Un zombie rôde dans les parages…'); break;
       }
     }
   }
@@ -4447,10 +3280,8 @@ function updateMobs(dt) {
     const distP = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
     if (distP > 44) { removeMob(n); continue; }
     m.hurtT = Math.max(0, m.hurtT - dt); m.invuln = Math.max(0, m.invuln - dt);
-    const extraState = typeof updateExtraMobAI === 'function' ? updateExtraMobAI(m, dt, distP) : null;
-    if (extraState === 'removed') continue;
     // ---- Zombie : brûle au soleil ----
-    if (def.hostile && !def.creeper && !isCreative()) {
+    if (def.hostile && !isCreative()) {
       if (day > 0.6 && skyExposed(m.pos.x, m.pos.y + 1.5, m.pos.z) && !m.inWater) m.fireT = Math.max(m.fireT, 1.5);
     }
     if (m.fireT > 0) {
@@ -4462,9 +3293,7 @@ function updateMobs(dt) {
     // ---- IA ----
     ai.t -= dt; ai.atkCd -= dt; ai.losT -= dt;
     let speed = 0, want = ai.dir;
-    if (extraState === 'stop') {
-      speed = 0; want.set(0, 0, 0);
-    } else if (def.hostile) {
+    if (def.hostile) {
       if (ai.losT <= 0) { ai.losT = 0.5; if (distP < 20 && lineOfSight(new THREE.Vector3(m.pos.x, m.pos.y + 1.6, m.pos.z), new THREE.Vector3(player.pos.x, player.pos.y + 1.5, player.pos.z))) ai.memory = 8; }
       ai.memory -= dt;
       if (ai.memory > 0 && !player.dead && !isCreative()) {
@@ -4472,7 +3301,7 @@ function updateMobs(dt) {
         if (ai.sideT > 0) { ai.sideT -= dt; want.applyAxisAngle(_UP, ai.side * 1.2); }     // contournement (±70°)
         if (distP < 1.4 && Math.abs(player.pos.y - m.pos.y) < 1.6 && ai.atkCd <= 0) {
           ai.atkCd = 1;
-          if (damagePlayer(def.dmg, 'zombie', m.pos)) { if (m.rig.armL) m.rig.armL.rotation.x = m.rig.armR.rotation.x = -2.2; }
+          if (damagePlayer(def.dmg, 'zombie', m.pos)) { m.rig.armL.rotation.x = m.rig.armR.rotation.x = -2.2; }
         }
       } else if (ai.t <= 0) { ai.t = 2 + Math.random() * 3; if (Math.random() < 0.6) { const a = Math.random() * Math.PI * 2; want.set(Math.cos(a), 0, Math.sin(a)); ai.state = 'walk'; } else ai.state = 'idle'; }
       if (ai.memory <= 0 && ai.state === 'walk') speed = def.speed * 0.5;
@@ -4484,8 +3313,6 @@ function updateMobs(dt) {
       }
     }
     // Bords du monde : demi-tour
-    if (extraState === 'retreat') { want.set(m.pos.x - player.pos.x, 0, m.pos.z - player.pos.z).normalize(); speed = def.speed; }
-    else if (extraState === 'strafe') { want.set(player.pos.x - m.pos.x, 0, player.pos.z - m.pos.z).normalize().applyAxisAngle(_UP, 1.2); speed = def.speed; }
     if (distP > 38) { want.set(player.pos.x - m.pos.x, 0, player.pos.z - m.pos.z).normalize(); speed = def.speed; }
     if (speed > 0) m.yaw = lerpAngle(m.yaw, Math.atan2(want.x, want.z), Math.min(1, dt * 8));
     // ---- Physique ----
@@ -4548,91 +3375,6 @@ function pickMob() {
   }
   return best;
 }
-
-
-/* ===== PrismCraft extension: explosions.js ===== */
-/* =====================================================================
-   16h. TNT AMORCÉE ET EXPLOSIONS (Minecraft 1.8 simplifié)
-   ---------------------------------------------------------------------
-   • Clic droit avec un briquet sur une TNT (ou explosion voisine, ou feu de
-     lave) → le bloc est retiré et remplacé par une ENTITÉ « primed TNT » :
-     prisme rouge clignotant (blanc / rouge), physique simple (gravité,
-     rebond), mèche 4 s (80 ticks), sifflement.
-   • explode(pos, power) :
-       - blocs : pour chaque cellule dans le rayon, on lance un rayon depuis
-         le centre ; l'intensité power×(0.7..1.3) décroît de 0.3 par pas et
-         de la résistance du bloc (hard/5) ; si elle reste > 0 le bloc saute
-         (drop 1 fois sur 3, comme les 30 % de 1.8 ; TNT voisine → amorcée) ;
-       - entités : dégâts = (1 − d/(2·power)) × 7·power (+ recul), sur le
-         joueur, les mobs et les creepers ;
-       - effets : 40 particules grises + fumée, son « explode », flash.
-   • Les creepers appellent explode(pos, 3) ; la TNT power = 4.
-   ===================================================================== */
-const primedTNT = [];
-const tntMatA = new THREE.MeshLambertMaterial({ map: TEX.tnt.texture }), tntMatB = new THREE.MeshBasicMaterial({ color: 0xffffff });
-/** Transforme le bloc TNT (i,j,k) en entité amorcée. */
-function primeTNT(i, j, k, fuse = 4) {
-  const b = blockAt(i, j, k); if (!b || b.type !== 'tnt') return false;
-  removeBlock(i, j, k); recordEdit(i, j, k, null);
-  const mesh = new THREE.Mesh(prismGeo, tntMatA); mesh.scale.setScalar(0.98);
-  cellCenter(i, j, k, mesh.position); mesh.quaternion.copy(isUp(i, j) ? Q_UP : Q_DOWN);
-  scene.add(mesh);
-  primedTNT.push({ mesh, pos: mesh.position, vel: new THREE.Vector3((Math.random() - 0.5) * 0.4, 2.5, (Math.random() - 0.5) * 0.4), fuse, t: 0 });
-  SFX.play('fuse', { pos: mesh.position });
-  return true;
-}
-function updateTNT(dt) {
-  for (let n = primedTNT.length - 1; n >= 0; n--) {
-    const e = primedTNT[n]; e.t += dt; e.fuse -= dt;
-    e.vel.y -= GRAVITY * dt;
-    const ny = e.pos.y + e.vel.y * dt, c = worldToCell(e.pos.x, ny - BH / 2, e.pos.z);
-    if (e.vel.y < 0 && isSolid(c.i, c.j, c.k)) { e.pos.y = (c.k + 1) * BH + BH / 2; e.vel.y = 0; e.vel.x *= 0.5; e.vel.z *= 0.5; }
-    else e.pos.y = ny;
-    e.pos.x += e.vel.x * dt; e.pos.z += e.vel.z * dt;
-    e.mesh.material = Math.floor(e.t * (e.fuse < 1 ? 16 : 6)) % 2 ? tntMatB : tntMatA;   // clignotement accéléré à la fin
-    const s = 0.98 + (e.fuse < 0.5 ? (0.5 - e.fuse) * 0.6 : 0); e.mesh.scale.setScalar(s);
-    if (e.fuse <= 0) { scene.remove(e.mesh); primedTNT.splice(n, 1); explode(e.pos.clone(), 4); }
-  }
-}
-const _ex = new THREE.Vector3(), _exd = new THREE.Vector3();
-function explode(pos, power) {
-  SFX.play('explode', { pos, minGap: 0 });
-  spawnParticles(pos, 0x444444, 40, power * 2.2, 1.2, 1);
-  spawnParticles(pos, 0xffffff, 25, power * 1.6, 0.9, -1);
-  hurtEl.style.opacity = '0.6'; setTimeout(() => { hurtEl.style.opacity = '0'; }, 120);
-  // ---- Blocs : lancer de rayons vers une sphère de directions (16 × 8) ----
-  const R = Math.ceil(power * 1.4), removed = new Set(), toPrime = [];
-  for (let a = 0; a < 16; a++) for (let b = 0; b < 8; b++) {
-    const th = a / 16 * Math.PI * 2, ph = (b + 0.5) / 8 * Math.PI;
-    _exd.set(Math.sin(ph) * Math.cos(th), Math.cos(ph), Math.sin(ph) * Math.sin(th));
-    let inten = power * (0.7 + Math.random() * 0.6);
-    for (let d = 0.3; d < R + 1 && inten > 0; d += 0.3) {
-      _ex.copy(pos).addScaledVector(_exd, d);
-      const c = worldToCell(_ex.x, _ex.y, _ex.z), key = cellKey(c.i, c.j, c.k);
-      const bl = blocks.get(key);
-      if (bl) { const def = TYPES[bl.type]; inten -= ((def.hard ?? 1) / 5 + 0.3) * 0.3; if (inten > 0 && !removed.has(key) && c.k > 0 && !def.fluid) removed.add(key); }
-      inten -= 0.3 * 0.3 * 3;
-    }
-  }
-  for (const key of removed) {
-    const b = blocks.get(key); if (!b) continue;
-    const { i, j, k, type } = b;
-    if (type === 'tnt') { toPrime.push([i, j, k]); continue; }
-    removeBlock(i, j, k); recordEdit(i, j, k, null);
-    if (Math.random() < 0.33 && !isCreative()) { const def = TYPES[type]; const drop = def.drop === undefined ? type : def.drop; if (drop) spawnItem(drop, cellCenter(i, j, k, new THREE.Vector3()), new THREE.Vector3((Math.random() - 0.5) * 3, 3, (Math.random() - 0.5) * 3), 1); }
-  }
-  for (const [i, j, k] of toPrime) primeTNT(i, j, k, 0.5 + Math.random());   // réaction en chaîne
-  // ---- Entités ----
-  const range = power * 2;
-  const hurt = (p, applyDmg, kbFn) => { const d = p.distanceTo(pos); if (d > range) return; const f = 1 - d / range; applyDmg(Math.round(f * 7 * power + 1)); _exd.subVectors(p, pos).normalize(); kbFn(_exd, f); };
-  hurt(new THREE.Vector3(player.pos.x, player.pos.y + 0.9, player.pos.z), dmg => { player.invuln = 0; damagePlayer(dmg, 'explosion'); }, (dir, f) => { player.kb.set(dir.x * 8 * f, 0, dir.z * 8 * f); player.vel.y = Math.max(player.vel.y, 6 * f); player.onGround = false; });
-  for (const m of [...mobs]) hurt(m.pos, dmg => { m.health -= dmg; m.hurtT = 0.5; if (m.health <= 0) killMob(m, false); }, (dir, f) => { m.kb.set(dir.x * 8 * f, 0, dir.z * 8 * f); m.vel.y = Math.max(m.vel.y, 5 * f); });
-}
-DEATH_MSG.explosion = 'a explosé';
-DEATH_MSG.creeper = 'a été soufflé par un Creeper';
-DEATH_MSG.skeleton = 'a été criblé de flèches par un Squelette';
-DEATH_MSG.cactus = 's\u2019est piqué à mort';
-/* ===== End extension: explosions.js ===== */
 
 /* =====================================================================
    16h. TCHAT & COMMANDES (T ou /)
@@ -5160,68 +3902,6 @@ function bindSlotGrid(el, arr, key, isHotbar, guard = () => true) {
   el.addEventListener('click', e => { if (!guard()) return; const s = e.target.closest('.slot'); if (s && s.dataset[key] !== undefined) clickRealSlot(arr, idxOf(s), isHotbar, 0, e.shiftKey); });
   el.addEventListener('contextmenu', e => { if (!guard()) return; e.preventDefault(); const s = e.target.closest('.slot'); if (s && s.dataset[key] !== undefined) clickRealSlot(arr, idxOf(s), isHotbar, 2, e.shiftKey); });
 }
-/* ===== PrismCraft extension: chest.js ===== */
-/* =====================================================================
-   17b. COFFRES (27 slots par bloc, interface « Coffre » comme 1.8)
-   ---------------------------------------------------------------------
-   Chaque bloc `chest` possède son propre contenu dans CHESTS (Map clé de
-   cellule → tableau de 27 piles), créé à la première ouverture et sauvegardé
-   avec la partie.  Clic droit → openInventory('chest') : la zone supérieure
-   de la fenêtre montre la grille 3×9 du coffre, câblée sur la même logique de
-   slots (clickRealSlot : clic / clic droit / Maj+clic ↔ inventaire).  Casser
-   le coffre fait tomber son contenu au sol.  Le coffre de départ contient de
-   quoi commencer une partie en survie (outils en bois, torches, pain, arc).
-   ===================================================================== */
-const CHESTS = new Map();
-let openChestKey = null;
-const CHEST_VIEW = new Array(27).fill(null);                              // tableau « courant » lié à l'UI (référence stable pour bindSlotGrid)
-{
-  const win = document.getElementById('inv-window'), anchor = document.getElementById('inv-catalog');
-  const box = document.createElement('div'); box.className = 'mc-table hidden'; box.id = 'inv-chest'; box.style.height = 'auto';
-  box.innerHTML = `<div class="mc-label">Coffre</div><div class="mc-grid" id="chest-grid">${Array.from({ length: 27 }, (_, n) => `<div class="slot chest" data-ch="${n}"></div>`).join('')}</div>`;
-  win.insertBefore(box, anchor);
-}
-const invChest = document.getElementById('inv-chest'), chestGridEl = document.getElementById('chest-grid');
-/** Contenu d'un coffre (créé vide, ou garni pour le coffre de départ). */
-function chestContent(key) {
-  let c = CHESTS.get(key);
-  if (!c) {
-    c = new Array(27).fill(null);
-    if (key === STARTER_CHEST) { [['wooden_pickaxe', 1], ['wooden_axe', 1], ['wooden_sword', 1], ['torch', 8], ['bread', 4], ['bow', 1], ['arrow', 16], ['planks', 12], ['apple', 3]].forEach(([id, n], q) => { c[q] = { id, n }; }); }
-    CHESTS.set(key, c);
-  }
-  return c;
-}
-function openChest(cell) {
-  openChestKey = cellKey(cell.i, cell.j, cell.k);
-  const c = chestContent(openChestKey);
-  for (let n = 0; n < 27; n++) CHEST_VIEW[n] = c[n];
-  SFX.play('chest');
-  openInventory('chest');
-}
-function renderChestGrid() {
-  if (invMode !== 'chest') return;
-  for (const el of chestGridEl.children) el.innerHTML = stackHTML(CHEST_VIEW[+el.dataset.ch]);
-}
-/** Recopie la vue dans le coffre réel (après chaque clic) — les piles sont partagées par référence, on synchronise juste les cases vidées/remplies. */
-function syncChest() { if (!openChestKey) return; const c = CHESTS.get(openChestKey); if (c) for (let n = 0; n < 27; n++) c[n] = CHEST_VIEW[n]; }
-bindSlotGrid(chestGridEl, CHEST_VIEW, 'ch', false, () => invMode === 'chest');
-chestGridEl.addEventListener('click', () => { syncChest(); renderChestGrid(); });
-chestGridEl.addEventListener('contextmenu', () => { syncChest(); renderChestGrid(); });
-/** Maj+clic depuis l'inventaire avec un coffre ouvert → envoie la pile dans le coffre (au lieu de la hotbar). */
-function chestQuickMove(st) {
-  if (invMode !== 'chest') return false;
-  const left = addToArr(CHEST_VIEW, st.id, st.n); st.n = left; syncChest(); renderChestGrid(); return true;
-}
-/** Un coffre cassé vide son contenu au sol. */
-function dropChestContent(i, j, k) {
-  const key = cellKey(i, j, k), c = CHESTS.get(key); if (!c) return;
-  const pos = cellCenter(i, j, k, new THREE.Vector3());
-  for (const st of c) if (st) spawnItem(st.id, pos.clone(), new THREE.Vector3((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2), st.n);
-  CHESTS.delete(key);
-}
-/* ===== End extension: chest.js ===== */
-
 bindSlotGrid(invMainEl, INVENTORY, 'idx', false);
 bindSlotGrid(invHotbarEl, HOTBAR, 'slot', true);
 bindSlotGrid(hotbarEl, HOTBAR, 'slot', true, () => inventoryOpen);      // hotbar d'écran, cliquable uniquement fenêtre ouverte (CSS)
@@ -5271,17 +3951,14 @@ function openInventory(mode = 'player') {
   invTop.classList.toggle('hidden', mode !== 'player');
   invTable.classList.toggle('hidden', mode !== 'table');
   invFurnace.classList.toggle('hidden', mode !== 'furnace');
-  if (typeof invChest !== 'undefined') invChest.classList.toggle('hidden', mode !== 'chest');
-  invTitle.textContent = mode === 'table' ? 'Fabrication' : mode === 'furnace' ? 'Four' : mode === 'chest' ? 'Coffre' : 'Inventaire';
+  invTitle.textContent = mode === 'table' ? 'Fabrication' : mode === 'furnace' ? 'Four' : 'Inventaire';
   renderInventoryGrids();
-  if (mode === 'chest' && typeof renderChestGrid === 'function') renderChestGrid();
   setCursorStack(null);
   inventoryEl.classList.remove('hidden');
   document.body.classList.add('inv-open');
   controls.unlock();
 }
 function closeInventory(resume) {
-  if (invMode === 'chest' && typeof syncChest === 'function') syncChest();
   inventoryOpen = false;
   // Une pile encore au curseur retourne dans l'inventaire (ou est abandonnée si elle vient du catalogue)
   if (cursorStack && !cursorStack.fromCatalog) addToInventory(cursorStack.id, cursorStack.n);
@@ -5291,7 +3968,6 @@ function closeInventory(resume) {
   inventoryEl.classList.add('hidden');
   document.body.classList.remove('inv-open');
   updateHotbar(); updateHeldItem();
-  if (typeof openChestKey !== 'undefined') openChestKey = null;
   if (resume && !controls.isLocked && !player.dead) controls.lock();
 }
 document.getElementById('inv-close').addEventListener('click', () => closeInventory(true));
@@ -5340,89 +4016,7 @@ spawnPassiveMobs();
 document.body.classList.toggle('survival', !isCreative());
 chatLog('§eBienvenue dans PrismCraft 1.8 — T pour le tchat, /help pour les commandes.');
 /* API de debug (console navigateur) : PrismCraft.cmd('give slime 64'), PrismCraft.player, PrismCraft.mobs… */
-window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, CHESTS: typeof CHESTS !== 'undefined' ? CHESTS : null, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get seed() { return worldSeed; }, get lightMs() { return LIGHT && LIGHT.lastMs; }, get chunksInfo() { return { loaded: loadedChunks.size, loadQ: loadQueue.length, unloadQ: unloadQueue.length, playerChunk: (() => { const c = worldToCell(player.pos.x, 0, player.pos.z); return chunkOf(c.i, c.j); })() }; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
-
-
-/* ===== PrismCraft extension: options.js ===== */
-/* =====================================================================
-   18b. MENU OPTIONS (style 1.8) + « splash » jaune de l'écran titre
-   ---------------------------------------------------------------------
-   OPTIONS (persistées dans localStorage « prismcraft:options ») :
-     fov 30..110 (défaut 70 « Normal », comme Minecraft ; Quake Pro = 110),
-     sensitivity 0.1..2 (× 0.002 rad/pixel de PointerLockControls),
-     renderDistance 24..64 u (agit sur le culling ET le brouillard),
-     volume 0..1 (SFX), bobbing on/off, clouds on/off, brightness 0..1
-     (« Sombre » → « Lumineux » : plancher de la lumière du ciel la nuit).
-   Le panneau est injecté dans #overlay (menu Échap) sous forme de curseurs
-   Minecraft (boutons gris avec poignée) ; un bouton « Options… » est ajouté
-   au menu, « Terminé » referme le panneau.
-   ===================================================================== */
-const OPTIONS_DEFAULT = { fov: 70, sensitivity: 1, renderDistance: 40, volume: 0.7, bobbing: true, clouds: true, brightness: 0.5 };
-const OPTIONS = Object.assign({}, OPTIONS_DEFAULT, (() => { try { return JSON.parse(localStorage.getItem('prismcraft:options') || '{}'); } catch { return {}; } })());
-let VIEW_DIST_CUR = OPTIONS.renderDistance;
-/** Applique toutes les options au moteur (appelé au chargement et à chaque changement). */
-function applyOptions() {
-  controls.pointerSpeed = OPTIONS.sensitivity;
-  camera.fov = OPTIONS.fov; camera.updateProjectionMatrix();
-  VIEW_DIST_SQ = OPTIONS.renderDistance * OPTIONS.renderDistance;
-  SFX.setVolume(OPTIONS.volume);
-  cloudGroup.visible = OPTIONS.clouds;
-  if (VIEW_DIST_CUR !== OPTIONS.renderDistance) {
-    VIEW_DIST_CUR = OPTIONS.renderDistance;
-    scene.fog.near = VIEW_DIST_CUR * 0.55; scene.fog.far = VIEW_DIST_CUR;
-    refreshCulling(true);
-  }
-  localStorage.setItem('prismcraft:options', JSON.stringify(OPTIONS));
-}
-const OPTION_DEFS = [
-  { key: 'fov', label: 'Champ de vision', min: 30, max: 110, step: 1, fmt: v => v === 70 ? 'Normal' : v === 110 ? 'Quake Pro' : String(v) },
-  { key: 'sensitivity', label: 'Sensibilité', min: 0.1, max: 2, step: 0.05, fmt: v => v >= 2 ? 'HYPERSPEED !!!' : Math.round(v * 100) + ' %' },
-  { key: 'renderDistance', label: 'Distance d\u2019affichage', min: 24, max: 64, step: 4, fmt: v => v + ' blocs' },
-  { key: 'volume', label: 'Volume', min: 0, max: 1, step: 0.05, fmt: v => v <= 0 ? 'OFF' : Math.round(v * 100) + ' %' },
-  { key: 'brightness', label: 'Luminosité', min: 0, max: 1, step: 0.05, fmt: v => v <= 0 ? 'Sombre' : v >= 1 ? 'Lumineux' : Math.round(v * 100) + ' %' },
-  { key: 'bobbing', label: 'Balancement', toggle: true },
-  { key: 'clouds', label: 'Nuages', toggle: true },
-];
-{
-  const box = document.querySelector('#overlay .box'), menu = document.getElementById('menu');
-  const panel = document.createElement('div'); panel.id = 'options-panel'; panel.className = 'hidden';
-  panel.innerHTML = `<div class="opt-title">Options</div><div class="opt-grid"></div><button class="mc-btn opt-done">Terminé</button>`;
-  box.appendChild(panel);
-  const grid = panel.querySelector('.opt-grid');
-  const render = () => {
-    grid.innerHTML = OPTION_DEFS.map(d => {
-      if (d.toggle) return `<button class="opt-btn" data-key="${d.key}">${d.label} : ${OPTIONS[d.key] ? 'OUI' : 'NON'}</button>`;
-      const t = (OPTIONS[d.key] - d.min) / (d.max - d.min);
-      return `<div class="opt-slider" data-key="${d.key}"><div class="opt-knob" style="left:calc(${(t * 100).toFixed(1)}% - ${(t * 10).toFixed(1)}px)"></div><span>${d.label} : ${d.fmt(OPTIONS[d.key])}</span></div>`;
-    }).join('');
-  };
-  const setFromPointer = (el, clientX) => {
-    const d = OPTION_DEFS.find(o => o.key === el.dataset.key); const r = el.getBoundingClientRect();
-    let t = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-    let v = d.min + t * (d.max - d.min); v = Math.round(v / d.step) * d.step; v = +v.toFixed(3);
-    if (OPTIONS[d.key] !== v) { OPTIONS[d.key] = v; applyOptions(); render(); }
-  };
-  let dragging = null;
-  grid.addEventListener('pointerdown', e => {
-    const b = e.target.closest('.opt-btn'); if (b) { OPTIONS[b.dataset.key] = !OPTIONS[b.dataset.key]; applyOptions(); render(); SFX.play('click'); return; }
-    const sl = e.target.closest('.opt-slider'); if (sl) { dragging = sl; setFromPointer(sl, e.clientX); }
-  });
-  window.addEventListener('pointermove', e => { if (dragging) setFromPointer(dragging, e.clientX); });
-  window.addEventListener('pointerup', () => { if (dragging) { dragging = null; SFX.play('click'); } });
-  const btn = document.createElement('button'); btn.id = 'btn-options'; btn.textContent = '⚙ Options…';
-  menu.insertBefore(btn, document.getElementById('btn-save'));
-  const keys = box.querySelector('.keys');
-  btn.addEventListener('click', e => { e.stopPropagation(); panel.classList.remove('hidden'); menu.classList.add('hidden'); keys.classList.add('hidden'); render(); SFX.play('click'); });
-  panel.querySelector('.opt-done').addEventListener('click', e => { e.stopPropagation(); panel.classList.add('hidden'); menu.classList.remove('hidden'); keys.classList.remove('hidden'); SFX.play('click'); });
-  panel.addEventListener('click', e => e.stopPropagation());
-  // Splash jaune oscillant sous le titre (liste 1.8 + clins d'œil aux prismes)
-  const SPLASHES = ['Triangulaire !', '100 % prismes !', 'Also try Minecraft!', 'Notch approuve ?', '√3 inside', 'Bienvenue en 1.8 !', 'Creeper ? Aww man', 'Pas de cube ici !', 'Hexagones cachés !', 'Made in Île-de-France', 'Tessellation !', 'Sans blocs carrés !'];
-  const h1 = box.querySelector('h1');
-  const splash = document.createElement('div'); splash.id = 'splash'; splash.textContent = SPLASHES[Math.floor(Math.random() * SPLASHES.length)];
-  h1.style.position = 'relative'; h1.appendChild(splash);
-}
-applyOptions();
-/* ===== End extension: options.js ===== */
+window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get seed() { return worldSeed; }, get lightMs() { return LIGHT && LIGHT.lastMs; }, get chunksInfo() { return { loaded: loadedChunks.size, loadQ: loadQueue.length, unloadQ: unloadQueue.length, playerChunk: (() => { const c = worldToCell(player.pos.x, 0, player.pos.z); return chunkOf(c.i, c.j); })() }; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
 
 /* =====================================================================
    19. BOUCLE — deux passes (monde, puis bras 1re personne)
@@ -5434,8 +4028,6 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 const clock = new THREE.Clock();
-SFX.listener = player.pos;
-
 let underwaterFx = 0, lastPFlash = 0;
 function animate() {
   requestAnimationFrame(animate);
@@ -5460,13 +4052,8 @@ function animate() {
   sun.target.position.copy(player.pos);
   updateItems(dt);
   updateFurnace(dt);
-  updateTNT(dt);
-  updateArrows(dt);
-  updateBow(dt);
   animateFluidTextures(anim.t);
   updateDayNight(dt);
-  if (LIGHT) LIGHT.setDaylight(daylight());
-  if (LIGHT) LIGHT.update();
   updateMobs(dt);
   updateZombieSpawning(dt);
   updateParticles(dt);
