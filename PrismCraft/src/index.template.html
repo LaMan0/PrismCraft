@@ -170,6 +170,7 @@
   #overlay kbd { display: inline-block; padding: 3px 6px; background: #222; border: 1px solid #555; border-bottom-width: 3px; font: 7px var(--mc-font); }
   #overlay .note { margin-top: 10px; font-size: 7px; line-height: 1.7; color: #9aa3b0; }
   #save-status { font: 7px/1.7 var(--mc-font); }
+  #seed-line { font: 7px/1.7 var(--mc-font); color: #d9d9a0; margin-top: 4px; }
   /* Vignette d'immersion : sous l'eau (bleu) / dans la lave (orange), en plus du brouillard court */
   #immersion { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .25s; }
   #immersion.water { opacity: 1; background: radial-gradient(ellipse at center, rgba(20,70,160,.10) 30%, rgba(10,40,120,.55) 100%); backdrop-filter: blur(1.2px); }
@@ -310,6 +311,7 @@
       <button id="btn-save">💾 Sauvegarder</button>
       <button id="btn-savequit">💾 Sauvegarder et quitter</button>
     </div>
+    <div id="seed-line">🌱 Seed : —</div>
     <div id="save-status"></div>
     <div class="note">F3/F4/F5 ne sont interceptées que pendant le jeu ; dans ce menu elles gardent leur rôle navigateur.</div>
   </div>
@@ -586,7 +588,7 @@ const TYPES = {
   prismarine: { name: 'Prismarine',         color: 0x5f9a8a, cat: 'build', hard: 1.5, tool: 'pickaxe' },
   obsidian:   { name: 'Obsidienne',         color: 0x1d1230, cat: 'build', hard: 50, tool: 'pickaxe', minTier: 3 },
   glass:      { name: 'Verre',              color: 0xa8dcff, cat: 'build', hard: 0.3, transparent: true, drop: null },
-  leaves:     { name: 'Feuilles',           color: 0x3f7a2a, cat: 'deco',  hard: 0.2 },
+  leaves:     { name: 'Feuilles',           color: 0x3f7a2a, cat: 'deco',  hard: 0.2, transparent: true, foliage: true },
   snow:       { name: 'Neige',              color: 0xf1f5f8, cat: 'deco',  hard: 0.2 },
   slime:      { name: 'Bloc de Slime',      color: 0x7ccc4a, cat: 'deco',  hard: 0.1, transparent: true, opacity: 0.75, slime: true },
   gold:       { name: 'Minerai d\'or',      color: 0x8a8a8a, cat: 'build', hard: 3, tool: 'pickaxe', minTier: 2 },
@@ -831,11 +833,14 @@ function generateTexture(baseColor, type) {
       for (let n = 0; n < 5; n++) { const x = Math.floor(rnd() * SIZE), y = Math.floor(rnd() * 12); for (let d = 0; d < 3; d++) px(x, y + d, base, 0.6); }   // fentes
       break;
     }
-    case 'leaves':
-      noiseFill(base, 0.22);
-      for (let n = 0; n < 30; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 0.45);   // trous d'ombre
+    case 'leaves': {
+      // Feuilles « fancy » comme Minecraft : feuillage opaque percé de trous
+      // (on voit à travers la canopée). Le matériau est transparent avec alphaTest.
+      noiseFill(base, 0.22, 0, 0, SIZE, SIZE, () => (rnd() < 0.18 ? 0 : 1));
+      for (let n = 0; n < 24; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 0.45);   // trous d'ombre
       for (let n = 0; n < 12; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 1.35);   // feuilles éclairées
       break;
+    }
     case 'glass': {
       // Vitre : intérieur très transparent, cadre clair opaque, reflets diagonaux (canal alpha du canvas)
       ctx.clearRect(0, 0, SIZE, SIZE);
@@ -1159,8 +1164,8 @@ const iconMat = (id) => _iconMats[id] || (_iconMats[id] = new THREE.MeshBasicMat
    les collisions / la visée ; chaque record connaît sa couche et son index.
    OPTIMISATION : castShadow = receiveShadow = false sur tout le terrain.
    ===================================================================== */
-const WORLD_I = 96;     // 48 unités en X
-const WORLD_J = 56;     // ≈ 48,5 unités en Z
+// Monde INFINI : découpé en chunks de 16×16 colonnes générés autour du joueur
+// (voir src/worldgen.js). Le niveau de la mer est conservé comme constante.
 const WATER_LEVEL = 4.0;
 
 // Capacité par type (le sous-sol est majoritairement en roche)
@@ -1282,8 +1287,8 @@ function makeLayer(type) {
     map: TEX[type].texture,
     transparent: !!def.transparent,
     opacity: def.opacity ?? 1,
-    depthWrite: !def.transparent || !!def.slime,
-    alphaTest: def.transparent ? 0.05 : 0,
+    depthWrite: !def.transparent || !!def.slime || !!def.foliage,
+    alphaTest: def.transparent ? (def.foliage ? 0.5 : 0.05) : 0,
     emissive: def.emissive ?? 0x000000, emissiveIntensity: def.emissive ? 0.6 : 0, emissiveMap: def.emissive ? TEX[type].texture : null,
   });
   const max = LAYER_MAX[type] || 5000;
@@ -1315,7 +1320,7 @@ function makeLayer(type) {
     depthPre.name = 'depthpre_' + type;
     scene.add(depthPre);
   }
-  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(WORLD_I * HX / 2, 10, WORLD_J * HROW / 2), 200);
+  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 10, 0), 1000);   // frustumCulled = false : sphère non utilisée
   scene.add(im);
   return { type, mesh: im, depthPre, ao, idxToKey: [], max, dirty: false };
 }
@@ -1324,6 +1329,7 @@ for (const t of TYPE_IDS) terrain[t] = makeLayer(t);
 const totalBlocks = () => TYPE_IDS.reduce((n, t) => n + terrain[t].mesh.count, 0);
 
 const blocks = new Map();   // "i,j,k" → { layer, idx, type, i, j, k, hidden }
+const edits = new Map();    // journal des modifications du joueur (sauvegarde) — déclaré tôt pour le loader de chunks
 
 const _m = new THREE.Matrix4();
 const _pos = new THREE.Vector3();
@@ -1385,10 +1391,51 @@ function scheduleAround(i, j, k) {
   for (const [ni, nj] of neighbors3(i, j)) { schedule(ni, nj, k); schedule(ni, nj, k + 1); }
 }
 
+/** Monde infini : agrandit la capacité d'une couche InstancedMesh quand elle est
+    pleine (double le buffer et recopie matrices / couleurs / attributs AO + lumière). */
+function growLayer(type) {
+  const layer = terrain[type], def = TYPES[type], old = layer.mesh;
+  const newMax = Math.max(layer.max * 2, layer.max + 4000);
+  const geo = prismGeo.clone();
+  let ao = null;
+  if (!def.fluid) { ao = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1); ao.setUsage(THREE.DynamicDrawUsage); geo.setAttribute('aoBits', ao); }
+  const skyL = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1);
+  const blkL = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1);
+  skyL.setUsage(THREE.DynamicDrawUsage); blkL.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('skyL', skyL); geo.setAttribute('blkL', blkL);
+  const im = new THREE.InstancedMesh(geo, old.material, newMax);
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  im.setColorAt(0, _white);
+  im.castShadow = false; im.receiveShadow = false; im.frustumCulled = false; im.name = old.name;
+  if (def.transparent) im.renderOrder = def.fluid ? 3 : 1;
+  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 10, 0), 1000);
+  const count = old.count;
+  for (let n = 0; n < count; n++) {
+    old.getMatrixAt(n, _m); im.setMatrixAt(n, _m);
+    old.getColorAt(n, _c); im.setColorAt(n, _c);
+    if (ao) ao.array[n] = layer.ao ? layer.ao.array[n] : 0;
+    skyL.array[n] = layer.skyL ? layer.skyL.array[n] : 0;
+    blkL.array[n] = layer.blkL ? layer.blkL.array[n] : 0;
+  }
+  im.count = count;
+  scene.remove(old); scene.add(im);
+  let depthPre = null;
+  if (def.fluid) {
+    depthPre = new THREE.InstancedMesh(prismGeo, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true }), newMax);
+    depthPre.instanceMatrix = im.instanceMatrix;
+    depthPre.frustumCulled = false; depthPre.renderOrder = 2; depthPre.name = 'depthpre_' + type;
+    if (layer.depthPre) scene.remove(layer.depthPre); scene.add(depthPre);
+  }
+  layer.mesh = im; layer.ao = ao; layer.skyL = skyL; layer.blkL = blkL; layer.max = newMax; layer.depthPre = depthPre;
+  if (ao) ao.needsUpdate = true; skyL.needsUpdate = true; blkL.needsUpdate = true;
+  im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+}
+
 function addBlock(i, j, k, type, doFlush = true, level) {
   const key = cellKey(i, j, k);
   const layer = terrain[type];
-  if (!layer || blocks.has(key) || layer.mesh.count >= layer.max) return false;
+  if (!layer || blocks.has(key)) return false;
+  if (layer.mesh.count >= layer.max) growLayer(type);
   const idx = layer.mesh.count++;
   const b = { layer, idx, type, i, j, k, hidden: false };
   if (TYPES[type].fluid) b.level = SOURCE_OF[TYPES[type].fam] === type ? 8 : (level ?? 7);   // source = 8, écoulement = 1..7
@@ -1435,26 +1482,16 @@ const blockAt = (i, j, k) => blocks.get(cellKey(i, j, k));
 const isFluid = (b) => !!(b && TYPES[b.type].fluid);
 /** Solide = bloque le joueur / la visée.  Les fluides ne sont PAS solides. */
 const isSolid = (i, j, k) => { const b = blocks.get(cellKey(i, j, k)); return !!b && !TYPES[b.type].fluid && !TYPES[b.type].passable; };
-const inWorld = (i, j) => i >= 0 && i < WORLD_I && j >= 0 && j < WORLD_J;
 
-/* ---- Génération procédurale ---- */
-const fbm = makePerlin(1337);
-const heightMap = new Int16Array(WORLD_I * WORLD_J);
+/* ---- Génération procédurale (bruit re-seedable, voir src/worldgen.js) ---- */
+let fbm = makePerlin(1337);
 
 function generateWorld() {
 }
 generateWorld();
 
-
-/* Plus de socle plein sous le monde : en créatif on peut percer la bedrock (k = 0)
-   et voir le vide.  Un simple cadre sombre matérialise le bord de la carte. */
-const base = new THREE.Mesh(
-  new THREE.BoxGeometry(WORLD_I * HX + 0.5, 0.5, WORLD_J * HROW + 0.5),
-  new THREE.MeshBasicMaterial({ color: 0x1a1a1e, side: THREE.BackSide })
-);
-base.position.set(WORLD_I * HX / 2 - HX / 2, -0.25, WORLD_J * HROW / 2);
-base.visible = false;
-scene.add(base);
+/* Plus de socle plein sous le monde : avec les chunks, le monde n'a plus de bord ;
+   en créatif on peut percer la bedrock (k = 0) et voir le vide en dessous. */
 
 /* ---- Mode de jeu : 'creative' (par défaut) ou 'survival' (touche F4 pour basculer).
    Créatif : bedrock (k = 0) destructible, vol autorisé, Pick Block depuis le catalogue.
@@ -1551,7 +1588,7 @@ function fluidReaction(cellBlock, incomingFam) {
 }
 /** Place (ou renforce) un courant `fam` de niveau `level` en (i,j,k). */
 function placeFlow(i, j, k, level, fam = 'water') {
-  if (!inWorld(i, j) || k < 0) return;
+  if (k < 0) return;
   const ex = blockAt(i, j, k);
   const flowType = FLOW_OF[fam];
   if (!ex) addBlock(i, j, k, flowType, true, level);
@@ -1632,11 +1669,14 @@ highlight.scale.setScalar(1.015);
 highlight.visible = false;
 highlight.renderOrder = 2;
 scene.add(highlight);
-const ghost = new THREE.Mesh(prismGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false }));
+/* Sonde de raycast INVISIBLE : sert uniquement à calculer la cellule de pose
+   (adjacentCellByNormal). Le bloc blanc translucide de prévisualisation a été
+   supprimé : on ne garde que la bordure du bloc visé, comme quand la main est
+   vide, exactement comme dans Minecraft. */
+const ghost = new THREE.Mesh(prismGeo, new THREE.MeshBasicMaterial());
 ghost.scale.setScalar(0.98);
-ghost.matrixAutoUpdate = false;                                           // matrice écrite à la main (visée + affichage)
-ghost.visible = false;
-scene.add(ghost);
+ghost.matrixAutoUpdate = false;                                           // matrice écrite à la main (raycast uniquement)
+ghost.visible = true;                                                     // jamais ajouté à la scène → jamais rendu
 
 /* =====================================================================
    9. JOUEUR : contrôles, gravité, collisions
@@ -1710,8 +1750,8 @@ function groundBelow(px, py, pz) {
   return false;
 }
 function spawn() {
-  const i = Math.floor(WORLD_I / 2), j = Math.floor(WORLD_J / 2);
-  const top = heightMap[j * WORLD_I + i];
+  const i = 0, j = 0;
+  const top = heightAt(i, j);
   cellCenter(i, j, top, player.pos);
   player.pos.y = (top + 1) * BH + 0.5;
   player.vel.set(0, 0, 0);
@@ -2141,7 +2181,6 @@ applyCameraMode();
    13. DEBUG (F3)  (inchangé)
    ===================================================================== */
 let debug = false;
-const CHUNK = 16;
 /* ---- Hitbox F3 : prisme HEXAGONAL rouge = exactement le volume testé par collides() ----
    Le fil de fer est construit sur une hauteur unitaire (y ∈ [0, 1]) et mis à
    l'échelle en Y chaque frame avec entity.height → il suit l'accroupissement.
@@ -2543,9 +2582,7 @@ function pickTarget() {
     const key = cellKey(c.i, c.j, c.k);
     const b = blocks.get(key);
     if (b && (!TYPES[b.type].fluid || targetFluids)) {
-      const wasVisible = ghost.visible; ghost.visible = true;
       const place = adjacentCellByNormal(c, prev);
-      ghost.visible = wasVisible;
       return { hit: c, place, block: b };
     }
     if (key !== prevKey) { prev = c; prevKey = key; }
@@ -2560,15 +2597,7 @@ function updateHighlight() {
     cellCenter(i, j, k, highlight.position);
     highlight.quaternion.copy(isUp(i, j) ? Q_UP : Q_DOWN);
     highlight.visible = true;
-    // Fantôme : montre la cellule de POSE (déduite de la normale) quand on tient un bloc
-    const id = heldId();
-    if (id && isBlockId(id) && target.place && target.place.k >= 0) {
-      cellCenter(target.place.i, target.place.j, target.place.k, ghost.position);
-      ghost.quaternion.copy(isUp(target.place.i, target.place.j) ? Q_UP : Q_DOWN);
-      ghost.updateMatrix(); ghost.matrixWorld.copy(ghost.matrix);
-      ghost.visible = true;
-    } else ghost.visible = false;
-  } else { highlight.visible = false; ghost.visible = false; }
+  } else { highlight.visible = false; }
 }
 /* =====================================================================
    PICK BLOCK (clic molette) — comme Minecraft
@@ -3164,28 +3193,38 @@ function surfaceY(x, z) {
   return null;
 }
 const skyExposed = (x, y, z) => { const c = worldToCell(x, y, z); for (let k = c.k + 1; k < 40; k++) if (blockAt(c.i, c.j, k)) return false; return true; };
-function spawnPassiveMobs() {
-  let tries = 0;
-  while (mobs.length < 14 && tries++ < 400) {
-    const x = 3 + Math.random() * (WORLD_I * HX - 6), z = 3 + Math.random() * (WORLD_J * HROW - 6);
+/** Fait apparaître UN passif sur de l'herbe autour du joueur (monde infini). */
+function spawnOnePassive() {
+  for (let t = 0; t < 30; t++) {
+    const a = Math.random() * Math.PI * 2, r = 8 + Math.random() * 26;
+    const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
     const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1.5) continue;
     const c = worldToCell(x, y - 0.5, z); if (blockAt(c.i, c.j, c.k)?.type !== 'grass') continue;
     if (Math.hypot(x - player.pos.x, z - player.pos.z) < 6) continue;
     spawnMob(Math.random() < 0.5 ? 'pig' : 'cow', x, y, z);
+    return true;
   }
+  return false;
+}
+function spawnPassiveMobs() {
+  let n = 0;
+  while (mobs.length < 14 && n++ < 400) spawnOnePassive();
 }
 let zombieTimer = 0;
 function updateZombieSpawning(dt) {
   zombieTimer += dt; if (zombieTimer < 5) return; zombieTimer = 0;
-  if (isCreative() || isDay()) return;
-  const n = mobs.filter(m => m.kind === 'zombie').length; if (n >= 8) return;
-  for (let t = 0; t < 20; t++) {
-    const a = Math.random() * Math.PI * 2, r = 18 + Math.random() * 20;
-    const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
-    if (x < 1 || z < 1 || x > WORLD_I * HX - 1 || z > WORLD_J * HROW - 1) continue;
-    const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1) continue;
-    spawnMob('zombie', x, y, z); chatLog('§7Un zombie rôde dans les parages…'); break;
+  if (!isCreative() && !isDay()) {
+    const n = mobs.filter(m => MOB_DEFS[m.kind]?.hostile).length; if (n < 8) {
+      for (let t = 0; t < 20; t++) {
+        const a = Math.random() * Math.PI * 2, r = 18 + Math.random() * 20;
+        const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
+        const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1) continue;
+        spawnMob('zombie', x, y, z); chatLog('§7Un zombie rôde dans les parages…'); break;
+      }
+    }
   }
+  // Monde infini : on garde quelques passifs autour du joueur
+  if (mobs.filter(m => !MOB_DEFS[m.kind]?.hostile).length < 10) spawnOnePassive();
 }
 const _md = new THREE.Vector3(), _mp = new THREE.Vector3();
 /** Ligne de vue mob → joueur (marche de 0.5 u dans isSolid). */
@@ -3237,9 +3276,9 @@ function updateMobs(dt) {
       if (m.dying > 0.8) removeMob(n);
       continue;
     }
-    // Despawn des zombies trop loin
+    // Despawn des mobs trop loin du joueur (monde infini : pas de bord)
     const distP = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
-    if (def.hostile && distP > 64) { removeMob(n); continue; }
+    if (distP > 44) { removeMob(n); continue; }
     m.hurtT = Math.max(0, m.hurtT - dt); m.invuln = Math.max(0, m.invuln - dt);
     // ---- Zombie : brûle au soleil ----
     if (def.hostile && !isCreative()) {
@@ -3274,7 +3313,7 @@ function updateMobs(dt) {
       }
     }
     // Bords du monde : demi-tour
-    if (m.pos.x < 1 || m.pos.z < 1 || m.pos.x > WORLD_I * HX - 1 || m.pos.z > WORLD_J * HROW - 1) { want.set(WORLD_I * HX / 2 - m.pos.x, 0, WORLD_J * HROW / 2 - m.pos.z).normalize(); speed = def.speed; }
+    if (distP > 38) { want.set(player.pos.x - m.pos.x, 0, player.pos.z - m.pos.z).normalize(); speed = def.speed; }
     if (speed > 0) m.yaw = lerpAngle(m.yaw, Math.atan2(want.x, want.z), Math.min(1, dt * 8));
     // ---- Physique ----
     const p = m.pos, ox = p.x, oz = p.z;
@@ -3410,7 +3449,10 @@ function runCommand(line) {
     case 'tp': {
       const x = numArg(a[0], player.pos.x), y = numArg(a[1], player.pos.y), z = numArg(a[2], player.pos.z);
       if ([x, y, z].some(Number.isNaN)) { chatLog('§cUsage : /tp <x> <y> <z>  (~ = relatif)'); break; }
-      player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.fallDist = 0; refreshCulling(true);
+      player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.fallDist = 0;
+      ensureChunksAround(x, z, true);                                  // monde infini : charge le rayon autour de la destination
+      if (LIGHT) LIGHT.computeAll();
+      refreshCulling(true);
       chatLog(`§7Téléporté en §e${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}`); break;
     }
     case 'give': {
@@ -3433,9 +3475,22 @@ function runCommand(line) {
       spawnMob(k, x, Math.max(y, player.pos.y), z); chatLog(`§7${MOB_DEFS[k].name} invoqué.`); break;
     }
     case 'save': saveWorld().then(() => chatLog('§aPartie sauvegardée.')); break;
-    case 'seed': chatLog('§7Seed : §e1337'); break;
+    case 'seed': {
+      if (a[0] !== undefined && /^-?\d+$/.test(a[0])) {
+        setWorldSeed(parseInt(a[0], 10));
+        updateSeedLine();
+        resetLoadedWorld();
+        spawn();
+        ensureChunksAround(player.pos.x, player.pos.z, true);
+        LIGHT.computeAll();
+        spawnPassiveMobs();
+        refreshCulling(true);
+        chatLog(`§7Nouveau monde généré avec la seed §e${worldSeed}`);
+      } else chatLog(`§7Seed du monde : §e${worldSeed}`);
+      break;
+    }
     case 'recipes': case 'recettes': chatLog(`§e${RECIPES.length} recettes : §7planches, bâtons, table de craft, four, torches, grès, pierre taillée, blocs de fer/or/diamant, pioches/haches/pelles/épées (bois, pierre, fer, diamant), armures (cuir, fer, diamant). Four : fer, or, sable→verre, cobble→roche, viandes, bois→charbon.`); break;
-    case 'help': chatLog('§e/gamemode <creative|survival> · /give <objet> [n] · /tp <x> <y> <z> · /clear · /time set <day|night> · /summon <zombie|pig|cow> · /kill · /heal · /xp <n> · /save · /recipes'); break;
+    case 'help': chatLog('§e/gamemode <creative|survival> · /give <objet> [n] · /tp <x> <y> <z> · /clear · /time set <day|night> · /summon <zombie|pig|cow> · /kill · /heal · /xp <n> · /seed [n] · /save · /recipes'); break;
     default: chatLog(`§cCommande inconnue : /${cmd}  (essayez /help)`);
   }
 }
@@ -3454,8 +3509,7 @@ function runCommand(line) {
    (piles {id, n}), position + orientation du joueur, vie / faim / XP, mode
    de jeu et heure du monde.  Base 'prismcraft', store 'saves', clé 'world1'.
    ===================================================================== */
-const SAVE_KEY = 'world1', SAVE_VERSION = 2;
-const edits = new Map();
+const SAVE_KEY = 'world1', SAVE_VERSION = 3;
 function recordEdit(i, j, k, type) { edits.set(cellKey(i, j, k), type); }
 function idbOpen() {
   return new Promise((res, rej) => {
@@ -3476,7 +3530,7 @@ async function idbGet(key) {
 const saveStatus = document.getElementById('save-status');
 async function saveWorld() {
   const data = {
-    version: SAVE_VERSION, date: Date.now(),
+    version: SAVE_VERSION, date: Date.now(), seed: worldSeed,
     edits: Array.from(edits, ([key, type]) => [key, type]),
     hotbar: HOTBAR, inventory: INVENTORY, armor: player.armor, selected, furnace: { in: FURNACE.in, fuel: FURNACE.fuel, out: FURNACE.out },
     player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw, pitch: player.pitch, health: player.health, food: player.food, saturation: player.saturation, xp: player.xp, level: player.level },
@@ -3487,19 +3541,13 @@ async function saveWorld() {
   flashHint('Partie sauvegardée');
   return data;
 }
-/** Rejoue une sauvegarde sur le monde fraîchement généré. */
+/** Restaure une sauvegarde : régénère le monde infini avec la seed sauvegardée,
+    puis réapplique le journal des modifications autour du joueur. */
 function applySave(data) {
-  for (const [key, type] of data.edits) {
-    const [i, j, k] = key.split(',').map(Number);
-    const ex = blockAt(i, j, k);
-    if (ex) removeBlock(i, j, k);
-    if (type && TYPES[type]) addBlock(i, j, k, type);
-    edits.set(key, type);
-  }
-  const fix = (arr, src, len) => { for (let n = 0; n < len; n++) { const st = src?.[n]; arr[n] = st && DEF(st.id) ? { id: st.id, n: Math.max(1, st.n | 0) } : null; } };
-  fix(HOTBAR, data.hotbar, 9); fix(INVENTORY, data.inventory, 27); fix(player.armor, data.armor, 4);
-  if (data.furnace) for (const k of ['in', 'fuel', 'out']) { const st = data.furnace[k]; FURNACE[k] = st && DEF(st.id) ? { id: st.id, n: st.n | 0 } : null; }
-  selected = data.selected ?? 0;
+  // 1. journal des modifications (réappliqué par chunk au chargement)
+  edits.clear();
+  for (const [key, type] of data.edits) edits.set(key, type);
+  // 2. position / orientation / état du joueur
   const P = data.player;
   if (P) {
     player.pos.set(P.x, P.y, P.z); player.vel.set(0, 0, 0);
@@ -3507,9 +3555,21 @@ function applySave(data) {
     player.health = P.health ?? 20; player.food = P.food ?? 20; player.saturation = P.saturation ?? 5; player.xp = P.xp ?? 0; player.level = P.level ?? 0;
   }
   worldTime = data.worldTime ?? worldTime;
+  // 3. régénère le monde autour de la position sauvegardée avec la seed sauvegardée
+  setWorldSeed(data.seed ?? worldSeed);
+  updateSeedLine();
+  resetLoadedWorld();
+  ensureChunksAround(player.pos.x, player.pos.z, true);
+  LIGHT.computeAll();
+  spawnPassiveMobs();
+  // 4. inventaire / armure / four / mode de jeu
+  const fix = (arr, src, len) => { for (let n = 0; n < len; n++) { const st = src?.[n]; arr[n] = st && DEF(st.id) ? { id: st.id, n: Math.max(1, st.n | 0) } : null; } };
+  fix(HOTBAR, data.hotbar, 9); fix(INVENTORY, data.inventory, 27); fix(player.armor, data.armor, 4);
+  if (data.furnace) for (const k of ['in', 'fuel', 'out']) { const st = data.furnace[k]; FURNACE[k] = st && DEF(st.id) ? { id: st.id, n: st.n | 0 } : null; }
+  selected = data.selected ?? 0;
   setGameMode(data.gameMode || 'creative');
   refreshInv(); refreshCulling(true);
-  chatLog(`§aPartie restaurée §7(${data.edits.length} modification(s), ${new Date(data.date).toLocaleString('fr-FR')})`);
+  chatLog(`§aPartie restaurée §7(seed §e${worldSeed}§7, ${data.edits.length} modification(s), ${new Date(data.date).toLocaleString('fr-FR')})`);
 }
 let pendingSave = null;
 idbGet(SAVE_KEY).then(d => {
@@ -3956,7 +4016,7 @@ spawnPassiveMobs();
 document.body.classList.toggle('survival', !isCreative());
 chatLog('§eBienvenue dans PrismCraft 1.8 — T pour le tchat, /help pour les commandes.');
 /* API de debug (console navigateur) : PrismCraft.cmd('give slime 64'), PrismCraft.player, PrismCraft.mobs… */
-window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
+window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get seed() { return worldSeed; }, get lightMs() { return LIGHT && LIGHT.lastMs; }, get chunksInfo() { return { loaded: loadedChunks.size, loadQ: loadQueue.length, unloadQ: unloadQueue.length, playerChunk: (() => { const c = worldToCell(player.pos.x, 0, player.pos.z); return chunkOf(c.i, c.j); })() }; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
 
 /* =====================================================================
    19. BOUCLE — deux passes (monde, puis bras 1re personne)
@@ -3977,6 +4037,7 @@ function animate() {
   anim.switchT = Math.min(1, anim.switchT + dt / 0.3);
 
   updatePlayer(dt);
+  updateChunks(player.pos.x, player.pos.z);   // monde infini : charge/décharge les chunks autour du joueur
   updateHighlight();
   updateMining(dt);
   updateCamera();

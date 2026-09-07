@@ -128,8 +128,8 @@ def build() -> str:
     )
 
     # Extra 3-D noise and the enhanced deterministic world generator.
-    height_marker = "const heightMap = new Int16Array(WORLD_I * WORLD_J);"
-    html = insert_after(html, height_marker, block("noise3.js", read("noise3.js")), "noise3 after heightMap")
+    height_marker = "let fbm = makePerlin(1337);"
+    html = insert_after(html, height_marker, block("noise3.js", read("noise3.js")), "noise3 after fbm")
     gen_re = re.compile(r"function generateWorld\(\) \{.*?\n\}\ngenerateWorld\(\);", re.S)
     matches = list(gen_re.finditer(html))
     if len(matches) != 1:

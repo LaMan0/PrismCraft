@@ -170,6 +170,7 @@
   #overlay kbd { display: inline-block; padding: 3px 6px; background: #222; border: 1px solid #555; border-bottom-width: 3px; font: 7px var(--mc-font); }
   #overlay .note { margin-top: 10px; font-size: 7px; line-height: 1.7; color: #9aa3b0; }
   #save-status { font: 7px/1.7 var(--mc-font); }
+  #seed-line { font: 7px/1.7 var(--mc-font); color: #d9d9a0; margin-top: 4px; }
   /* Vignette d'immersion : sous l'eau (bleu) / dans la lave (orange), en plus du brouillard court */
   #immersion { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .25s; }
   #immersion.water { opacity: 1; background: radial-gradient(ellipse at center, rgba(20,70,160,.10) 30%, rgba(10,40,120,.55) 100%); backdrop-filter: blur(1.2px); }
@@ -323,6 +324,7 @@
       <button id="btn-save">💾 Sauvegarder</button>
       <button id="btn-savequit">💾 Sauvegarder et quitter</button>
     </div>
+    <div id="seed-line">🌱 Seed : —</div>
     <div id="save-status"></div>
     <div class="note">F3/F4/F5 ne sont interceptées que pendant le jeu ; dans ce menu elles gardent leur rôle navigateur.</div>
   </div>
@@ -723,7 +725,7 @@ const TYPES = {
   prismarine: { name: 'Prismarine',         color: 0x5f9a8a, cat: 'build', hard: 1.5, tool: 'pickaxe' },
   obsidian:   { name: 'Obsidienne',         color: 0x1d1230, cat: 'build', hard: 50, tool: 'pickaxe', minTier: 3 },
   glass:      { name: 'Verre',              color: 0xa8dcff, cat: 'build', hard: 0.3, transparent: true, drop: null },
-  leaves:     { name: 'Feuilles',           color: 0x3f7a2a, cat: 'deco',  hard: 0.2 },
+  leaves:     { name: 'Feuilles',           color: 0x3f7a2a, cat: 'deco',  hard: 0.2, transparent: true, foliage: true },
   snow:       { name: 'Neige',              color: 0xf1f5f8, cat: 'deco',  hard: 0.2 },
   slime:      { name: 'Bloc de Slime',      color: 0x7ccc4a, cat: 'deco',  hard: 0.1, transparent: true, opacity: 0.75, slime: true },
   gold:       { name: 'Minerai d\'or',      color: 0x8a8a8a, cat: 'build', hard: 3, tool: 'pickaxe', minTier: 2 },
@@ -1114,11 +1116,14 @@ function generateTexture(baseColor, type) {
       for (let n = 0; n < 5; n++) { const x = Math.floor(rnd() * SIZE), y = Math.floor(rnd() * 12); for (let d = 0; d < 3; d++) px(x, y + d, base, 0.6); }   // fentes
       break;
     }
-    case 'leaves':
-      noiseFill(base, 0.22);
-      for (let n = 0; n < 30; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 0.45);   // trous d'ombre
+    case 'leaves': {
+      // Feuilles « fancy » comme Minecraft : feuillage opaque percé de trous
+      // (on voit à travers la canopée). Le matériau est transparent avec alphaTest.
+      noiseFill(base, 0.22, 0, 0, SIZE, SIZE, () => (rnd() < 0.18 ? 0 : 1));
+      for (let n = 0; n < 24; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 0.45);   // trous d'ombre
       for (let n = 0; n < 12; n++) px(Math.floor(rnd() * SIZE), Math.floor(rnd() * SIZE), base, 1.35);   // feuilles éclairées
       break;
+    }
     case 'glass': {
       // Vitre : intérieur très transparent, cadre clair opaque, reflets diagonaux (canal alpha du canvas)
       ctx.clearRect(0, 0, SIZE, SIZE);
@@ -1501,8 +1506,8 @@ function updateCrack(f, i, j, k) {
    les collisions / la visée ; chaque record connaît sa couche et son index.
    OPTIMISATION : castShadow = receiveShadow = false sur tout le terrain.
    ===================================================================== */
-const WORLD_I = 96;     // 48 unités en X
-const WORLD_J = 56;     // ≈ 48,5 unités en Z
+// Monde INFINI : découpé en chunks de 16×16 colonnes générés autour du joueur
+// (voir src/worldgen.js). Le niveau de la mer est conservé comme constante.
 const WATER_LEVEL = 4.0;
 
 // Capacité par type (le sous-sol est majoritairement en roche)
@@ -1635,8 +1640,8 @@ function makeLayer(type) {
     map: TEX[type].texture,
     transparent: !!def.transparent,
     opacity: def.opacity ?? 1,
-    depthWrite: !def.transparent || !!def.slime,
-    alphaTest: def.transparent ? 0.05 : 0,
+    depthWrite: !def.transparent || !!def.slime || !!def.foliage,
+    alphaTest: def.transparent ? (def.foliage ? 0.5 : 0.05) : 0,
     emissive: def.emissive ?? 0x000000, emissiveIntensity: def.emissive ? 0.6 : 0, emissiveMap: def.emissive ? TEX[type].texture : null,
   });
   const max = LAYER_MAX[type] || 5000;
@@ -1673,7 +1678,7 @@ function makeLayer(type) {
     depthPre.name = 'depthpre_' + type;
     scene.add(depthPre);
   }
-  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(WORLD_I * HX / 2, 10, WORLD_J * HROW / 2), 200);
+  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 10, 0), 1000);   // frustumCulled = false : sphère non utilisée
   scene.add(im);
   return { type, mesh: im, depthPre, ao, skyL, blkL, idxToKey: [], max, dirty: false };
 }
@@ -1682,6 +1687,7 @@ for (const t of TYPE_IDS) terrain[t] = makeLayer(t);
 const totalBlocks = () => TYPE_IDS.reduce((n, t) => n + terrain[t].mesh.count, 0);
 
 const blocks = new Map();   // "i,j,k" → { layer, idx, type, i, j, k, hidden }
+const edits = new Map();    // journal des modifications du joueur (sauvegarde) — déclaré tôt pour le loader de chunks
 
 const _m = new THREE.Matrix4();
 const _pos = new THREE.Vector3();
@@ -1743,10 +1749,51 @@ function scheduleAround(i, j, k) {
   for (const [ni, nj] of neighbors3(i, j)) { schedule(ni, nj, k); schedule(ni, nj, k + 1); }
 }
 
+/** Monde infini : agrandit la capacité d'une couche InstancedMesh quand elle est
+    pleine (double le buffer et recopie matrices / couleurs / attributs AO + lumière). */
+function growLayer(type) {
+  const layer = terrain[type], def = TYPES[type], old = layer.mesh;
+  const newMax = Math.max(layer.max * 2, layer.max + 4000);
+  const geo = prismGeo.clone();
+  let ao = null;
+  if (!def.fluid) { ao = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1); ao.setUsage(THREE.DynamicDrawUsage); geo.setAttribute('aoBits', ao); }
+  const skyL = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1);
+  const blkL = new THREE.InstancedBufferAttribute(new Float32Array(newMax), 1);
+  skyL.setUsage(THREE.DynamicDrawUsage); blkL.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('skyL', skyL); geo.setAttribute('blkL', blkL);
+  const im = new THREE.InstancedMesh(geo, old.material, newMax);
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  im.setColorAt(0, _white);
+  im.castShadow = false; im.receiveShadow = false; im.frustumCulled = false; im.name = old.name;
+  if (def.transparent) im.renderOrder = def.fluid ? 3 : 1;
+  im.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 10, 0), 1000);
+  const count = old.count;
+  for (let n = 0; n < count; n++) {
+    old.getMatrixAt(n, _m); im.setMatrixAt(n, _m);
+    old.getColorAt(n, _c); im.setColorAt(n, _c);
+    if (ao) ao.array[n] = layer.ao ? layer.ao.array[n] : 0;
+    skyL.array[n] = layer.skyL ? layer.skyL.array[n] : 0;
+    blkL.array[n] = layer.blkL ? layer.blkL.array[n] : 0;
+  }
+  im.count = count;
+  scene.remove(old); scene.add(im);
+  let depthPre = null;
+  if (def.fluid) {
+    depthPre = new THREE.InstancedMesh(prismGeo, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true }), newMax);
+    depthPre.instanceMatrix = im.instanceMatrix;
+    depthPre.frustumCulled = false; depthPre.renderOrder = 2; depthPre.name = 'depthpre_' + type;
+    if (layer.depthPre) scene.remove(layer.depthPre); scene.add(depthPre);
+  }
+  layer.mesh = im; layer.ao = ao; layer.skyL = skyL; layer.blkL = blkL; layer.max = newMax; layer.depthPre = depthPre;
+  if (ao) ao.needsUpdate = true; skyL.needsUpdate = true; blkL.needsUpdate = true;
+  im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+}
+
 function addBlock(i, j, k, type, doFlush = true, level) {
   const key = cellKey(i, j, k);
   const layer = terrain[type];
-  if (!layer || blocks.has(key) || layer.mesh.count >= layer.max) return false;
+  if (!layer || blocks.has(key)) return false;
+  if (layer.mesh.count >= layer.max) growLayer(type);
   const idx = layer.mesh.count++;
   const b = { layer, idx, type, i, j, k, hidden: false };
   if (TYPES[type].fluid) b.level = SOURCE_OF[TYPES[type].fam] === type ? 8 : (level ?? 7);   // source = 8, écoulement = 1..7
@@ -1797,11 +1844,9 @@ const blockAt = (i, j, k) => blocks.get(cellKey(i, j, k));
 const isFluid = (b) => !!(b && TYPES[b.type].fluid);
 /** Solide = bloque le joueur / la visée.  Les fluides ne sont PAS solides. */
 const isSolid = (i, j, k) => { const b = blocks.get(cellKey(i, j, k)); return !!b && !TYPES[b.type].fluid && !TYPES[b.type].passable; };
-const inWorld = (i, j) => i >= 0 && i < WORLD_I && j >= 0 && j < WORLD_J;
 
-/* ---- Génération procédurale ---- */
-const fbm = makePerlin(1337);
-const heightMap = new Int16Array(WORLD_I * WORLD_J);
+/* ---- Génération procédurale (bruit re-seedable, voir src/worldgen.js) ---- */
+let fbm = makePerlin(1337);
 /* ===== PrismCraft extension: noise3.js ===== */
 /* =====================================================================
    6a. BRUIT 3D (value noise trilinéaire + fbm) — grottes et filons
@@ -1832,38 +1877,63 @@ function makeNoise3(seed) {
     return sum / norm;
   };
 }
-const noise3 = makeNoise3(1337);
+let noise3 = makeNoise3(1337);
 /* ===== End extension: noise3.js ===== */
 
 
 
 /* ===== PrismCraft extension: worldgen.js ===== */
 /* =====================================================================
-   6b. GÉNÉRATION DU MONDE « MINECRAFT » : biomes, grottes, minerais, végétation
+   6b. MONDE INFINI + SEED — biomes, grottes, minerais, végétation, chunks
    ---------------------------------------------------------------------
-   Remplace l'ancien generateWorld().  Le relief utilise TOUJOURS le Perlin
-   2D d'origine (fbm) ; on y superpose :
-     • BIOMES (température / humidité, 2 bruits basse fréquence) :
-         plaines  → herbe, herbes hautes, fleurs, arbres épars ;
-         forêt    → arbres denses (chênes plus hauts) ;
-         désert   → sable + grès en sous-couche, cactus, pas d'arbre ;
-         toundra  → neige en surface, glace sur les lacs, sapins (feuilles étroites) ;
-       + neige d'altitude (top ≥ 13) quel que soit le biome ;
-     • GROTTES : deux bruits 3D « ridged » ; là où les deux crêtes se croisent
-       on creuse un tunnel (largeur ~2-3 blocs), uniquement sous la surface
-       (k < top − 2) pour garder le sol praticable, avec quelques entrées ;
-       lacs de lave dans les cavités profondes (k ≤ 2) ;
-     • MINERAIS : charbon partout, fer (k ≤ 9), or (k ≤ 4), diamant (k ≤ 3), en
-       grappes (hash par cellule) — inchangé, mais exposés par les grottes ;
-     • VÉGÉTATION : herbes hautes / coquelicots / pissenlits (blocs passables) ;
-     • COFFRE DE DÉPART : un coffre près du spawn avec quelques objets.
-   Toutes les décisions sont déterministes (seed 1337) → même monde à chaque
-   chargement, ce qui préserve le journal de modifications de la sauvegarde.
+   Remplace l'ancien generateWorld() à monde fini. Le relief utilise le
+   Perlin 2D re-seedable (fbm) ; on y superpose :
+     • BIOMES (température / humidité) : plaines, forêt, désert, toundra ;
+     • GROTTES (deux bruits 3D « ridged »), lacs de lave profonds ;
+     • MINERAIS en filons par profondeur (charbon > fer > or > diamant) ;
+     • VÉGÉTATION : herbes hautes, fleurs, cactus, et 3 essences d'arbres ;
+     • COFFRE DE DÉPART près du spawn.
+
+   Monde INFINI : découpé en chunks de 16×16 colonnes. Le terrain est généré
+   autour du joueur à mesure qu'il se déplace (LOAD_RADIUS), et les chunks
+   trop éloignés sont déchargés (UNLOAD_RADIUS, avec hystérésis). Chaque
+   cellule est calculée de façon DÉTERMINISTE à partir de la SEED (bruit +
+   hash), donc un même monde est reconstruit à l'identique : les modifications
+   du joueur (journal `edits`) sont réappliquées quand un chunk est rechargé.
    ===================================================================== */
+
+const CHUNK = 16;                     // côté d'un chunk, en cellules
+const LOAD_RADIUS = 2;                // chunks chargés autour du joueur (5×5 = 80×80 cellules, ≈ 40×69 unités)
+const UNLOAD_RADIUS = LOAD_RADIUS + 2; // hystérésis avant déchargement
 const BIOME_IDS = ['plains', 'forest', 'desert', 'taiga'];
-const biomeMap = new Uint8Array(WORLD_I * WORLD_J);
-function biomeAt(i, j) { return BIOME_IDS[biomeMap[j * WORLD_I + i]] || 'plains'; }
-/** Biome d'une colonne : température / humidité (Perlin basse fréquence). */
+
+let worldSeed = 0;
+const loadedChunks = new Set();       // "ci,cj" déjà générés (terrain de base)
+const loadQueue = [];                 // "ci,cj" à générer (budget par frame)
+const unloadQueue = [];               // "ci,cj" à libérer (budget par frame)
+
+const chunkKey = (ci, cj) => ci + ',' + cj;
+const chunkOf = (i, j) => ({ ci: Math.floor(i / CHUNK), cj: Math.floor(j / CHUNK) });
+const cellInChunk = (i, j, ci, cj) => ci * CHUNK <= i && i < (ci + 1) * CHUNK && cj * CHUNK <= j && j < (cj + 1) * CHUNK;
+
+/** Seed depuis l'URL (?seed=…) ou null. */
+function seedFromURL() {
+  const m = /[?&]seed=(-?\d+)/.exec(location.search);
+  return m ? (parseInt(m[1], 10) >>> 0) : null;
+}
+/** Ré-assigne les bruits pour une seed donnée. */
+function setWorldSeed(seed) {
+  worldSeed = seed >>> 0;
+  fbm = makePerlin(worldSeed);
+  noise3 = makeNoise3(worldSeed);
+}
+/** Met à jour l'affichage de la seed dans le menu. */
+function updateSeedLine() {
+  const el = document.getElementById('seed-line');
+  if (el) el.textContent = `🌱 Seed : ${worldSeed}`;
+}
+
+/* ---- Hauteur / biome / grottes d'une colonne (déterministe à partir de la seed) ---- */
 function computeBiome(wx, wz) {
   const temp = fbm(wx * 0.028 + 500, wz * 0.028 + 500, 2), hum = fbm(wx * 0.03 - 300, wz * 0.03 + 800, 2);
   if (temp > 0.22 && hum < 0.05) return 2;        // désert
@@ -1871,108 +1941,266 @@ function computeBiome(wx, wz) {
   if (hum > 0.1) return 1;                         // forêt
   return 0;                                        // plaines
 }
-/** Grotte en (wx, k, wz) ? — intersection de deux crêtes de bruit 3D. */
+const biomeIndexAt = (i, j) => computeBiome(i * HX, j * HROW);
+function biomeAt(i, j) { return BIOME_IDS[biomeIndexAt(i, j)]; }
+function heightAt(i, j) {
+  const wx = i * HX, wz = j * HROW, bio = biomeIndexAt(i, j);
+  let n = fbm(wx * 0.045 + 100, wz * 0.045 + 100, 4);
+  n = n * 0.5 + 0.5;
+  n = Math.pow(n, 1.35);
+  if (bio === 2) n = n * 0.75 + 0.08;
+  return 1 + Math.round(n * 13);
+}
 function isCave(wx, k, wz) {
   const a = Math.abs(noise3(wx * 0.10 + 7, k * 0.13 + 3, wz * 0.10 + 11) - 0.5);
   const b = Math.abs(noise3(wx * 0.09 - 5, k * 0.12 + 9, wz * 0.11 - 2) - 0.5);
   return a < 0.055 && b < 0.055;
 }
+/** Hash de cellule déterministe, dépendant de la seed (minerais, végétation, arbres). */
+const h2 = (a, b) => hash2(a ^ worldSeed, b ^ (worldSeed * 3));
 
-function generateWorld() {
-  const _t = new THREE.Vector3(), _l = new THREE.Vector3();
-  for (let j = 0; j < WORLD_J; j++) {
-    for (let i = 0; i < WORLD_I; i++) {
-      const wx = i * HX, wz = j * HROW;
-      const bio = computeBiome(wx, wz); biomeMap[j * WORLD_I + i] = bio;
-      let n = fbm(wx * 0.045 + 100, wz * 0.045 + 100, 4);
-      n = n * 0.5 + 0.5;
-      n = Math.pow(n, 1.35);
-      if (bio === 2) n = n * 0.75 + 0.08;                                  // désert plus plat
-      const top = 1 + Math.round(n * 13);
-      heightMap[j * WORLD_I + i] = top;
-      const beach = top <= WATER_LEVEL + 0.5;
-      for (let k = 0; k <= top; k++) {
-        let type;
-        // ---- Grottes (jamais la bedrock ni les 2 blocs de surface, sauf entrée aléatoire) ----
-        if (k > 0 && k < top - 1 && top > WATER_LEVEL + 1 && isCave(wx, k, wz)) {
-          if (k <= 2 && noise3(wx * 0.2, 0, wz * 0.2) > 0.6) addBlock(i, j, k, 'lava', false);      // lacs de lave en profondeur
-          continue;
-        }
-        if (k === top) {
-          if (beach) type = 'sand';
-          else if (top >= 13 || bio === 3) type = 'snow';
-          else if (bio === 2) type = 'sand';
-          else type = 'grass';
-        } else if (k >= top - 3) {
-          type = (beach || bio === 2) ? (k >= top - 1 ? 'sand' : 'sandstone') : (bio === 3 && k === top - 1 ? 'dirt' : 'dirt');
-        } else {
-          // Sous-sol 1.8 : roche + filons de granite / diorite / andésite / gravier (bruit 3D grossier)
-          const v = fbm(wx * 0.11 + k * 0.17 + 900, wz * 0.11 - k * 0.13 + 300, 2);
-          type = v > 0.34 ? 'granite' : v < -0.36 ? 'diorite' : (v > 0.2 && v < 0.26) ? 'andesite' : (v < -0.2 && v > -0.26 && k > 1) ? 'gravel' : 'stone';
-          if (k <= 4 && k > 0 && v > -0.05 && v < 0.05 && top > 6) type = 'gold';
-          // Minerais : charbon (fréquent, partout), fer (k ≤ 9), diamant (k ≤ 3, rare) — hash déterministe par cellule
-          if (type === 'stone') { const o = hash2(i * 7 + k * 31, j * 13 + k * 17) % 1000; if (o < 30) type = 'coal_ore'; else if (o < 46 && k <= 9) type = 'iron_ore'; else if (o < 49 && k <= 3) type = 'diamond_ore'; }
-          if (k === 1 && v > 0.42 && top > 8) type = 'lava';                       // poches de lave profondes (sous la roche)
-          if (k > 1 && type === 'stone' && hash2(i * 3 + k, j * 5 - k) % 1000 < 6) type = 'mossy_cobble';
-        }
-        if (k === 0) type = 'stone';                                              // « bedrock » (protégée en survie)
-        addBlock(i, j, k, type, false);
+/* ---- Colonne de terrain : sous-sol, surface, eau, végétation basse ---- */
+function generateColumn(i, j) {
+  const wx = i * HX, wz = j * HROW;
+  const bio = biomeIndexAt(i, j);
+  let n = fbm(wx * 0.045 + 100, wz * 0.045 + 100, 4);
+  n = n * 0.5 + 0.5;
+  n = Math.pow(n, 1.35);
+  if (bio === 2) n = n * 0.75 + 0.08;                                  // désert plus plat
+  const top = 1 + Math.round(n * 13);
+  const beach = top <= WATER_LEVEL + 0.5;
+  for (let k = 0; k <= top; k++) {
+    let type;
+    // ---- Grottes (jamais la bedrock ni les 2 blocs de surface) ----
+    if (k > 0 && k < top - 1 && top > WATER_LEVEL + 1 && isCave(wx, k, wz)) {
+      if (k <= 2 && noise3(wx * 0.2, 0, wz * 0.2) > 0.6) addBlock(i, j, k, 'lava', false);      // lacs de lave en profondeur
+      continue;
+    }
+    if (k === top) {
+      if (beach) type = 'sand';
+      else if (top >= 13 || bio === 3) type = 'snow';
+      else if (bio === 2) type = 'sand';
+      else type = 'grass';
+    } else if (k >= top - 3) {
+      type = (beach || bio === 2) ? (k >= top - 1 ? 'sand' : 'sandstone') : (bio === 3 && k === top - 1 ? 'dirt' : 'dirt');
+    } else {
+      const v = fbm(wx * 0.11 + k * 0.17 + 900, wz * 0.11 - k * 0.13 + 300, 2);
+      type = v > 0.34 ? 'granite' : v < -0.36 ? 'diorite' : (v > 0.2 && v < 0.26) ? 'andesite' : (v < -0.2 && v > -0.26 && k > 1) ? 'gravel' : 'stone';
+      if (k <= 4 && k > 0 && v > -0.05 && v < 0.05 && top > 6) type = 'gold';
+      if (type === 'stone') { const o = h2(i * 7 + k * 31, j * 13 + k * 17) % 1000; if (o < 30) type = 'coal_ore'; else if (o < 46 && k <= 9) type = 'iron_ore'; else if (o < 49 && k <= 3) type = 'diamond_ore'; }
+      if (k === 1 && v > 0.42 && top > 8) type = 'lava';                       // poches de lave profondes
+      if (k > 1 && type === 'stone' && h2(i * 3 + k, j * 5 - k) % 1000 < 6) type = 'mossy_cobble';
+    }
+    if (k === 0) type = 'stone';                                              // « bedrock » (protégée en survie)
+    addBlock(i, j, k, type, false);
+  }
+  // Lacs / océans : blocs SOURCE d'eau au-dessus du fond, jusqu'au niveau WATER_LEVEL ; glace en toundra
+  for (let k = top + 1; k <= WATER_LEVEL; k++) addBlock(i, j, k, (bio === 3 && k === WATER_LEVEL) ? 'ice' : 'water', false);
+  // ---- Végétation de surface (blocs passables) et cactus ----
+  if (!beach && top < 13) {
+    const r = h2(i * 11 + 3, j * 17 + 5) % 1000;
+    if (bio === 2) { if (r < 12) { const h = 1 + (r % 3); for (let k = 1; k <= h; k++) addBlock(i, j, top + k, 'cactus', false); } }
+    else if (bio !== 3) {
+      if (r < 140) addBlock(i, j, top + 1, 'tallgrass', false);
+      else if (r < 152) addBlock(i, j, top + 1, 'flower_red', false);
+      else if (r < 166) addBlock(i, j, top + 1, 'flower_yellow', false);
+    }
+  }
+}
+
+/* ---- Arbres : 3 essences (chêne/bouleau/sapin), feuilles transparentes ---- */
+const _tv = new THREE.Vector3(), _lv = new THREE.Vector3();
+function placeTree(i, j) {
+  const top = heightAt(i, j), bio = biomeIndexAt(i, j);
+  if (top <= WATER_LEVEL + 0.5 || top >= 13 || bio === 2) return false;
+  if (Math.abs(i) < 5 && Math.abs(j) < 4) return false;                       // zone dégagée autour du spawn
+  const density = bio === 1 ? 42 : bio === 3 ? 18 : 9;
+  if (h2(i, j) % 1000 >= density) return false;
+  const ex = blockAt(i, j, top + 1); if (ex) removeBlock(i, j, top + 1);      // remplace l'herbe haute
+  const pine = bio === 3;
+  const trunkH = pine ? 5 + (h2(j, i) % 3) : 4 + (h2(j, i) % 2);
+  for (let k = top + 1; k <= top + trunkH; k++) { if (!blockAt(i, j, k)) addBlock(i, j, k, 'wood', false); }
+  cellCenter(i, j, 0, _tv);
+  for (let dj = -3; dj <= 3; dj++) for (let di = -6; di <= 6; di++) {
+    const ii = i + di, jj = j + dj;
+    cellCenter(ii, jj, 0, _lv);
+    const d = Math.hypot(_lv.x - _tv.x, _lv.z - _tv.z);
+    if (pine) {
+      for (let k = top + 2; k <= top + trunkH + 1; k++) {
+        const lvl = top + trunkH + 1 - k, rad = lvl === 0 ? 0.3 : ((lvl % 2) ? 1.6 : 0.9) * Math.min(1, 0.5 + lvl * 0.2);
+        if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
       }
-      // Lacs : blocs SOURCE d'eau (grille) au-dessus du fond, jusqu'au niveau WATER_LEVEL ; glace en toundra
-      for (let k = top + 1; k <= WATER_LEVEL; k++) addBlock(i, j, k, (bio === 3 && k === WATER_LEVEL) ? 'ice' : 'water', false);
-      // ---- Végétation de surface (blocs passables) et cactus ----
-      if (!beach && top < 13) {
-        const r = hash2(i * 11 + 3, j * 17 + 5) % 1000;
-        if (bio === 2) { if (r < 12) { const h = 1 + (r % 3); for (let k = 1; k <= h; k++) addBlock(i, j, top + k, 'cactus', false); } }
-        else if (bio !== 3) {
-          if (r < 140) addBlock(i, j, top + 1, 'tallgrass', false);
-          else if (r < 152) addBlock(i, j, top + 1, 'flower_red', false);
-          else if (r < 166) addBlock(i, j, top + 1, 'flower_yellow', false);
-        }
+    } else {
+      for (let k = top + trunkH - 2; k <= top + trunkH + 1; k++) {
+        const rad = (k >= top + trunkH) ? (k === top + trunkH + 1 ? 0.8 : 1.35) : 1.9;
+        if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
       }
     }
   }
-  // ---- Arbres : densité par biome (forêt ×3, désert 0), sapins en toundra ----
-  const ci = Math.floor(WORLD_I / 2), cj = Math.floor(WORLD_J / 2);
-  for (let j = 3; j < WORLD_J - 3; j++) {
-    for (let i = 5; i < WORLD_I - 5; i++) {
-      const top = heightMap[j * WORLD_I + i], bio = biomeMap[j * WORLD_I + i];
-      if (top <= WATER_LEVEL + 0.5 || top >= 13 || bio === 2) continue;
-      if (Math.abs(i - ci) < 4 && Math.abs(j - cj) < 3) continue;
-      const density = bio === 1 ? 42 : bio === 3 ? 18 : 9;
-      if (hash2(i, j) % 1000 >= density) continue;
-      const ex = blockAt(i, j, top + 1); if (ex) removeBlock(i, j, top + 1);          // remplace l'herbe haute
-      const pine = bio === 3;
-      const trunkH = pine ? 5 + (hash2(j, i) % 3) : 4 + (hash2(j, i) % 2);
-      for (let k = top + 1; k <= top + trunkH; k++) { if (!blockAt(i, j, k)) addBlock(i, j, k, 'wood', false); }
-      cellCenter(i, j, 0, _t);
-      for (let dj = -3; dj <= 3; dj++) for (let di = -6; di <= 6; di++) {
-        const ii = i + di, jj = j + dj;
-        cellCenter(ii, jj, 0, _l);
-        const d = Math.hypot(_l.x - _t.x, _l.z - _t.z);
-        if (pine) {                                                            // sapin : cône de feuilles étagé
-          for (let k = top + 2; k <= top + trunkH + 1; k++) {
-            const lvl = top + trunkH + 1 - k, rad = lvl === 0 ? 0.3 : ((lvl % 2) ? 1.6 : 0.9) * Math.min(1, 0.5 + lvl * 0.2);
-            if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
-          }
-        } else {
-          for (let k = top + trunkH - 2; k <= top + trunkH + 1; k++) {
-            const rad = (k >= top + trunkH) ? (k === top + trunkH + 1 ? 0.8 : 1.35) : 1.9;
-            if (d <= rad && !blockAt(ii, jj, k)) addBlock(ii, jj, k, 'leaves', false);
-          }
-        }
-      }
+  return true;
+}
+/** Décore les arbres du chunk ET de ses 8 voisins (les canopées débordent ; idempotent). */
+function decorateTrees(ci, cj) {
+  for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
+    for (let j = cjj * CHUNK; j < (cjj + 1) * CHUNK; j++) for (let i = cii * CHUNK; i < (cii + 1) * CHUNK; i++) placeTree(i, j);
+}
+
+/* ---- Coffre de départ (à 3 cellules du spawn) ---- */
+let STARTER_CHEST = null, starterPlaced = false;
+function placeStarterChest() {
+  if (starterPlaced) return;
+  const t = heightAt(3, 0);
+  const ex = blockAt(3, 0, t + 1); if (ex) removeBlock(3, 0, t + 1);
+  addBlock(3, 0, t + 1, 'chest', false);
+  STARTER_CHEST = cellKey(3, 0, t + 1);
+  starterPlaced = true;
+}
+
+/* ---- AO d'un chunk (+1 de marge) ---- */
+function refreshChunkAO(ci, cj) {
+  const i0 = (ci - 1) * CHUNK, i1 = (ci + 2) * CHUNK, j0 = (cj - 1) * CHUNK, j1 = (cj + 2) * CHUNK;
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) for (let k = 0; k < 64; k++) { const b = blockAt(i, j, k); if (b) computeAO(b); }
+}
+
+/* ---- Décoration différée : les arbres (et l'AO) ne sont finalisés que lorsque
+       le chunk ET ses 8 voisins sont générés (les canopées débordent).  Cela évite
+       de redécorer 9× la même zone à chaque chargement de chunk. ---- */
+const decoPending = new Set();        // "ci,cj" prêts à être décorés (3×3 chargé)
+const decoDone = new Set();           // "ci,cj" déjà décorés
+
+/* ---- Chargement / déchargement ---- */
+function ensureChunk(ci, cj) {
+  const key = chunkKey(ci, cj);
+  if (loadedChunks.has(key)) return;
+  loadedChunks.add(key);
+  const i0 = ci * CHUNK, j0 = cj * CHUNK;
+  if (LIGHT) LIGHT.bulk = true;                                        // ne pas marquer la boîte sale pour chaque bloc
+  for (let j = j0; j < j0 + CHUNK; j++) for (let i = i0; i < i0 + CHUNK; i++) generateColumn(i, j);
+  if (LIGHT) LIGHT.bulk = false;
+  // Réapplique les modifications du joueur dans ce chunk (journal de sauvegarde)
+  for (const [ekey, etype] of edits) {
+    const [i, j, k] = ekey.split(',').map(Number);
+    if (cellInChunk(i, j, ci, cj)) {
+      const ex = blockAt(i, j, k);
+      if (etype && TYPES[etype]) { if (ex) removeBlock(i, j, k); addBlock(i, j, k, etype); }
+      else if (ex) removeBlock(i, j, k);
     }
   }
-  // ---- Coffre de départ (à 3 cellules du spawn) ----
-  { const si = ci + 3, sj = cj; const t = heightMap[sj * WORLD_I + si]; const ex = blockAt(si, sj, t + 1); if (ex) removeBlock(si, sj, t + 1); addBlock(si, sj, t + 1, 'chest', false); STARTER_CHEST = cellKey(si, sj, t + 1); }
-  for (const b of blocks.values()) computeAO(b);                          // AO initiale de tout le monde
+  placeStarterChest();
+  for (const t of TYPE_IDS) if (terrain[t].dirty) flushLayer(terrain[t]);
+  if (LIGHT) LIGHT.onChunkLoad(ci, cj);                                // marque la lumière sale (déférée)
+  // Programme la décoration de ce chunk et de ses voisins déjà chargés
+  for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++) {
+    const kk = chunkKey(cii, cjj);
+    if (loadedChunks.has(kk) && !decoDone.has(kk)) decoPending.add(kk);
+  }
+}
+/** Décore (arbres + AO) jusqu'à `budget` chunks dont le voisinage 3×3 est chargé. */
+function updateDeco(budget) {
+  while (budget-- > 0 && decoPending.size) {
+    let processed = false;
+    for (const key of decoPending) {
+      const [ci, cj] = key.split(',').map(Number);
+      let ready = true;
+      for (let cjj = cj - 1; cjj <= cj + 1 && ready; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
+        if (!loadedChunks.has(chunkKey(cii, cjj))) { ready = false; break; }
+      if (!ready) continue;                                            // pas encore de voisinage complet
+      decorateTrees(ci, cj);
+      refreshChunkAO(ci, cj);
+      decoPending.delete(key);
+      decoDone.add(key);
+      processed = true;
+      break;
+    }
+    if (!processed) break;                                             // rien de prêt pour l'instant
+  }
+}
+function unloadChunk(ci, cj) {
+  const key = chunkKey(ci, cj);
+  if (!loadedChunks.has(key)) return;
+  loadedChunks.delete(key);
+  decoDone.delete(key); decoPending.delete(key);
+  const i0 = ci * CHUNK, j0 = cj * CHUNK;
+  for (let j = j0; j < j0 + CHUNK; j++) for (let i = i0; i < i0 + CHUNK; i++) for (let k = 0; k < 64; k++) {
+    const b = blockAt(i, j, k);
+    if (b) removeBlock(i, j, k);
+  }
+  refreshChunkAO(ci, cj);
+  if (LIGHT) LIGHT.onChunkUnload(ci, cj);
+}
+
+/** Charge/décharge les chunks autour du joueur, avec un budget par frame (anti-saccades).
+    Le chunk du joueur est TOUJOURS garanti chargé (le sol existe sous ses pieds). */
+function updateChunks(px, pz, force = false) {
+  const c = worldToCell(px, 0, pz), pc = chunkOf(c.i, c.j);
+  if (!loadedChunks.has(chunkKey(pc.ci, pc.cj))) ensureChunk(pc.ci, pc.cj);   // garantie : chunk du joueur
+  for (let cj = pc.cj - LOAD_RADIUS; cj <= pc.cj + LOAD_RADIUS; cj++)
+    for (let ci = pc.ci - LOAD_RADIUS; ci <= pc.ci + LOAD_RADIUS; ci++) {
+      const key = chunkKey(ci, cj);
+      if (!loadedChunks.has(key) && !loadQueue.includes(key)) loadQueue.push(key);
+    }
+  for (const key of loadedChunks) {
+    const [ci, cj] = key.split(',').map(Number);
+    if ((Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) && !unloadQueue.includes(key)) unloadQueue.push(key);
+  }
+  let budget = force ? 400 : 4;
+  while (budget-- > 0 && loadQueue.length) {
+    const key = loadQueue.shift();
+    if (!loadedChunks.has(key)) { const [ci, cj] = key.split(',').map(Number); ensureChunk(ci, cj); }
+  }
+  // Déchargement immédiat (peu coûteux, hors de vue) : jamais de retard de mémoire.
+  while (unloadQueue.length) {
+    const key = unloadQueue.shift();
+    if (loadedChunks.has(key)) {
+      const [ci, cj] = key.split(',').map(Number);
+      if (Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) unloadChunk(ci, cj);
+    }
+  }
+  updateDeco(force ? 10000 : 2);                                 // arbres + AO différés (budget par frame)
+}
+/** Chargement SYNCHRONE de tout le rayon (spawn, tp, restauration de sauvegarde). */
+function ensureChunksAround(px, pz, force = false) {
+  const c = worldToCell(px, 0, pz), pc = chunkOf(c.i, c.j);
+  for (let cj = pc.cj - LOAD_RADIUS; cj <= pc.cj + LOAD_RADIUS; cj++)
+    for (let ci = pc.ci - LOAD_RADIUS; ci <= pc.ci + LOAD_RADIUS; ci++) ensureChunk(ci, cj);
+  for (const key of [...loadedChunks]) {
+    const [ci, cj] = key.split(',').map(Number);
+    if (Math.abs(ci - pc.ci) > UNLOAD_RADIUS || Math.abs(cj - pc.cj) > UNLOAD_RADIUS) unloadChunk(ci, cj);
+  }
+  updateDeco(10000);                                             // finalise toute la décoration du rayon
+  for (const b of blocks.values()) computeAO(b);                 // AO complète (les arbres ont pu changer les voisinages)
   for (const t of TYPE_IDS) flushLayer(terrain[t]);
 }
-let STARTER_CHEST = null;
+
+/** Purge complète du monde chargé (blocs, couches, entités, lumière) — conserve `edits`. */
+function resetLoadedWorld() {
+  while (mobs.length) removeMob(mobs.length - 1);
+  for (const it of items) scene.remove(it.mesh); items.length = 0;
+  if (typeof primedTNT !== 'undefined') { for (const e of primedTNT) scene.remove(e.mesh); primedTNT.length = 0; }
+  if (typeof arrows !== 'undefined') { for (const a of arrows) scene.remove(a.mesh); arrows.length = 0; }
+  if (typeof CHESTS !== 'undefined') { CHESTS.clear(); openChestKey = null; }
+  blocks.clear();
+  for (const t of TYPE_IDS) { const L = terrain[t]; L.mesh.count = 0; L.idxToKey.length = 0; if (L.depthPre) L.depthPre.count = 0; L.dirty = true; }
+  loadedChunks.clear(); loadQueue.length = 0; unloadQueue.length = 0;
+  decoPending.clear(); decoDone.clear();
+  pending.clear();
+  starterPlaced = false; STARTER_CHEST = null;
+  if (LIGHT) LIGHT.reset();
+}
+
+/* ---- Génération initiale (autour du spawn 0,0) ---- */
+function generateWorld() {
+  const fromURL = seedFromURL();
+  setWorldSeed(fromURL !== null ? fromURL : ((Math.random() * 0x7fffffff) | 0));
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.get('seed') !== String(worldSeed)) { u.searchParams.set('seed', worldSeed); history.replaceState(null, '', u.toString()); }
+  } catch {}
+  updateSeedLine();
+  ensureChunksAround(0, 0, true);
+}
 generateWorld();
 /* ===== End extension: worldgen.js ===== */
-
 
 
 
@@ -1987,33 +2215,30 @@ generateWorld();
                propagé de la même façon.
    La luminosité finale d'une face = max(sky × jour, block) passée dans la
    courbe de Minecraft  b = (1−x)/(3x+1), x = 1 − niveau/15.
-   Implémentation :
-     • deux Uint8Array (sky, blk) indexés (k·WORLD_J + j)·WORLD_I + i, plus
-       `opac` (255 = opaque, sinon atténuation supplémentaire) et `src`
-       (niveau émis) tenus à jour par addBlock / removeBlock ;
-     • propagation en largeur (BFS) sur les 5 voisins (3 latéraux + haut/bas)
-       en n'utilisant QUE des tableaux typés (aucune chaîne, aucune alloc.) ;
-     • mise à jour INCRÉMENTALE : chaque modification agrandit une boîte
-       « sale » ; au plus une fois par frame la boîte étendue de 16 cellules
-       (portée max = 15) est recalculée : remise à zéro, colonnes de ciel,
-       sources internes, graines sur le pourtour (dont les valeurs ne peuvent
-       pas avoir changé), puis BFS ;
-     • chaque prisme reçoit 2 attributs instanciés (skyL, blkL) contenant les
-       niveaux de ses 5 faces (5 quartets → entier < 2^20, exact en float32) ;
-       le vertex shader (attachAO) retrouve la face et calcule la luminosité,
-       le fragment shader multiplie l'éclairage Lambert et ajoute la lueur
-       chaude des torches la nuit (uniform uSkyLight = 0.3 + 0.7·jour).
+
+   Monde INFINI : les tableaux de lumière sont stockés PAR CHUNK (16×16×64).
+   Le BFS de propagation traverse les frontières de chunk via l'index global
+   (i,j,k) → chunk ; les cellules hors des chunks chargés sont traitées comme
+   ciel ouvert (sky 15) / obscurité (blk 0). Les chargements/déchargements de
+   chunks marquent des régions « sales » qui sont recalculées UNE FOIS PAR
+   FRAME (LIGHT.update), jamais de façon synchrone par chunk.
    ===================================================================== */
 const LIGHT_KMAX = 64;
-const LIGHT_N = WORLD_I * WORLD_J * LIGHT_KMAX;
 const LIGHT_U = { uSkyLight: { value: 1 } };                 // uniform partagé par toutes les couches
 {
-  const sky = new Uint8Array(LIGHT_N), blk = new Uint8Array(LIGHT_N), opac = new Uint8Array(LIGHT_N), src = new Uint8Array(LIGHT_N);
-  const STRIDE_J = WORLD_I, STRIDE_K = WORLD_I * WORLD_J;
-  const idxOf = (i, j, k) => (k * WORLD_J + j) * WORLD_I + i;
-  const inside = (i, j, k) => i >= 0 && i < WORLD_I && j >= 0 && j < WORLD_J && k >= 0 && k < LIGHT_KMAX;
-  let kTop = 20;                                                          // plus haut bloc + marge (évite de parcourir 64 étages)
-  const dirty = { i0: Infinity, i1: -Infinity, j0: Infinity, j1: -Infinity, any: false, full: false };
+  const CS = CHUNK, CN = CS * CS * LIGHT_KMAX;
+  const chunks = new Map();                                  // "ci,cj" → { ci, cj, sky, blk, opac, src }
+  const dirty = { i0: Infinity, i1: -Infinity, j0: Infinity, j1: -Infinity, any: false };
+  const lightDirtyChunks = new Set();                        // "ci,cj" à recalculer (chargement/déchargement)
+  const chunkKey = (ci, cj) => ci + ',' + cj;
+  const chunkOf = (i, j) => ({ ci: Math.floor(i / CS), cj: Math.floor(j / CS) });
+
+  function newChunk(ci, cj) {
+    return { ci, cj, sky: new Uint8Array(CN), blk: new Uint8Array(CN), opac: new Uint8Array(CN), src: new Uint8Array(CN) };
+  }
+  function chunkAt(i, j) { const c = chunkOf(i, j); return chunks.get(chunkKey(c.ci, c.cj)); }
+  const idOf = (li, lj, k) => (k * CS + lj) * CS + li;
+
   /** Code d'opacité d'un type : 255 opaque · sinon atténuation supplémentaire par pas. */
   function opacityOf(type) {
     if (!type) return 0;
@@ -2024,67 +2249,91 @@ const LIGHT_U = { uSkyLight: { value: 1 } };                 // uniform partagé
     if (d.transparent) return 0;
     return 255;
   }
-  const queue = new Int32Array(LIGHT_N);                                  // file BFS (indices), sans allocation
-  /** Propagation BFS générique sur `arr` à partir des `count` graines déjà placées dans `queue`. */
-  function propagate(arr, count) {
-    let head = 0, tail = count;
-    while (head < tail) {
-      const id = queue[head++];
-      const L = arr[id]; if (L <= 1) continue;
-      const i = id % WORLD_I, j = ((id / WORLD_I) | 0) % WORLD_J, k = (id / STRIDE_K) | 0;
-      // 5 voisins : i±1, voisin j (selon l'orientation UP/DOWN), k±1
+  const opacAt = (i, j, k) => {
+    if (k < 0 || k >= LIGHT_KMAX) return 0;
+    const ch = chunkAt(i, j); if (!ch) return 0;
+    return ch.opac[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
+  };
+  const skyAt = (i, j, k) => {
+    if (k < 0) return 0;
+    if (k >= LIGHT_KMAX) return 15;
+    const ch = chunkAt(i, j); if (!ch) return 15;            // chunk non chargé = ciel ouvert
+    return ch.sky[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
+  };
+  const blkAt = (i, j, k) => {
+    if (k < 0 || k >= LIGHT_KMAX) return 0;
+    const ch = chunkAt(i, j); if (!ch) return 0;
+    return ch.blk[idOf(i - ch.ci * CS, j - ch.cj * CS, k)];
+  };
+
+  /* BFS trans-chunk : file de [chunk, idLocal] pour éviter toute alloc de clé. */
+  const queue = [];
+  function propagate(arrKey) {
+    let head = 0;
+    while (head < queue.length) {
+      const ch = queue[head++], id = queue[head++];
+      const L = ch[arrKey][id]; if (L <= 1) continue;
+      const li = id % CS, lj = ((id / CS) | 0) % CS, k = (id / (CS * CS)) | 0;
+      const i = ch.ci * CS + li, j = ch.cj * CS + lj;
       const nj = isUp(i, j) ? j - 1 : j + 1;
-      const cand = [i - 1, j, k, i + 1, j, k, i, nj, k, i, j, k + 1, i, j, k - 1];
-      for (let c = 0; c < 15; c += 3) {
-        const ci = cand[c], cj = cand[c + 1], ck = cand[c + 2];
-        if (!inside(ci, cj, ck)) continue;
-        const nid = idxOf(ci, cj, ck), op = opac[nid];
-        if (op === 255) continue;
+      // i±1 (même chunk sauf aux bords), voisin j (peut changer de chunk), k±1 (même chunk)
+      const check = (ni, njj, nk) => {
+        if (nk < 0 || nk >= LIGHT_KMAX) return;
+        let nch = ch, nli = ni - ch.ci * CS, nlj = njj - ch.cj * CS;
+        if (nli < 0 || nli >= CS || nlj < 0 || nlj >= CS) {
+          const nc = chunkOf(ni, njj);
+          nch = chunks.get(chunkKey(nc.ci, nc.cj)); if (!nch) return;
+          nli = ni - nch.ci * CS; nlj = njj - nch.cj * CS;
+        }
+        const nid = idOf(nli, nlj, nk);
+        const op = nch.opac[nid];
+        if (op === 255) return;
         const nl = L - 1 - op;
-        if (nl > arr[nid]) { arr[nid] = nl; if (tail < LIGHT_N) queue[tail++] = nid; }
-      }
+        if (nl > nch[arrKey][nid]) { nch[arrKey][nid] = nl; queue.push(nch, nid); }
+      };
+      check(i - 1, j, k); check(i + 1, j, k); check(i, nj, k); check(i, j, k + 1); check(i, j, k - 1);
     }
   }
-  /** Recalcule complètement la lumière dans la boîte [i0..i1]×[j0..j1] (tous les k ≤ kTop). */
-  function recompute(i0, j0, i1, j1) {
-    i0 = Math.max(0, i0); j0 = Math.max(0, j0); i1 = Math.min(WORLD_I - 1, i1); j1 = Math.min(WORLD_J - 1, j1);
-    const kt = Math.min(LIGHT_KMAX - 1, kTop);
-    // 1. remise à zéro + colonnes de ciel
-    let n = 0;
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-      let v = 15;
-      for (let k = LIGHT_KMAX - 1; k >= 0; k--) {
-        const id = idxOf(i, j, k); blk[id] = 0;
-        if (v > 0) { const op = opac[id]; if (op === 255) v = 0; else v = Math.max(0, v - op); }
-        sky[id] = v;
+  /** Recalcule la lumière pour un ensemble de chunks chargés (clés "ci,cj"). */
+  function recomputeSet(regionKeys) {
+    for (const key of regionKeys) {
+      let ch = chunks.get(key);
+      if (!ch) { const [ci, cj] = key.split(',').map(Number); ch = newChunk(ci, cj); chunks.set(key, ch); }
+      ch.sky.fill(0); ch.blk.fill(0);
+      for (let lj = 0; lj < CS; lj++) for (let li = 0; li < CS; li++) {
+        let v = 15;
+        for (let k = LIGHT_KMAX - 1; k >= 0; k--) {
+          const id = idOf(li, lj, k);
+          if (v > 0) { const op = ch.opac[id]; if (op === 255) v = 0; else v = Math.max(0, v - op); }
+          ch.sky[id] = v;
+        }
       }
     }
-    // 2. graines ciel : cellules éclairées de la boîte dont un voisin pourrait recevoir moins + pourtour
-    const seed = (arr, i, j, k) => { if (!inside(i, j, k)) return; const id = idxOf(i, j, k); if (arr[id] > 1) queue[n++] = id; };
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) for (let k = 0; k <= kt; k++) seed(sky, i, j, k);
-    for (let k = 0; k <= kt; k++) {
-      for (let i = i0 - 1; i <= i1 + 1; i++) { seed(sky, i, j0 - 1, k); seed(sky, i, j1 + 1, k); }
-      for (let j = j0; j <= j1; j++) { seed(sky, i0 - 1, j, k); seed(sky, i1 + 1, j, k); }
-    }
-    propagate(sky, n);
-    // 3. lumière des blocs : sources internes + pourtour
-    n = 0;
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) for (let k = 0; k <= kt; k++) { const id = idxOf(i, j, k); if (src[id]) { blk[id] = src[id]; queue[n++] = id; } }
-    for (let k = 0; k <= kt; k++) {
-      for (let i = i0 - 1; i <= i1 + 1; i++) { seed(blk, i, j0 - 1, k); seed(blk, i, j1 + 1, k); }
-      for (let j = j0; j <= j1; j++) { seed(blk, i0 - 1, j, k); seed(blk, i1 + 1, j, k); }
-    }
-    propagate(blk, n);
+    queue.length = 0;
+    for (const key of regionKeys) { const ch = chunks.get(key); for (let id = 0; id < CN; id++) if (ch.sky[id] > 1) queue.push(ch, id); }
+    propagate('sky');
+    // Lumière des blocs : on re-sème depuis TOUTES les sources des chunks chargés,
+    // pour que la lumière d'une torche traverse les frontières de chunk rechargées.
+    queue.length = 0;
+    for (const key of loadedChunks) { const ch = chunks.get(key); if (!ch) continue; for (let id = 0; id < CN; id++) if (ch.src[id]) { ch.blk[id] = ch.src[id]; queue.push(ch, id); } }
+    propagate('blk');
   }
-  /** Niveaux (sky, blk) d'une cellule, hors monde = plein ciel. */
-  const skyAt = (i, j, k) => inside(i, j, k) ? sky[idxOf(i, j, k)] : (k >= LIGHT_KMAX ? 15 : (i < 0 || i >= WORLD_I || j < 0 || j >= WORLD_J) ? 15 : 0);
-  const blkAt = (i, j, k) => inside(i, j, k) ? blk[idxOf(i, j, k)] : 0;
-  /* Écrit les attributs skyL / blkL d'un prisme : quartet 0 = dessus, 1 = dessous, 2..4 = faces latérales
-     (même repérage que computeAO : direction locale tournée par l'orientation de l'instance). */
+  /** Recalcule les chunks chargés qui intersectent la boîte absolue [i0..i1]×[j0..j1]. */
+  function recomputeRegion(i0, j0, i1, j1) {
+    const ci0 = Math.floor(i0 / CS), ci1 = Math.floor(i1 / CS), cj0 = Math.floor(j0 / CS), cj1 = Math.floor(j1 / CS);
+    const region = [];
+    for (const key of loadedChunks) {
+      const [ci, cj] = key.split(',').map(Number);
+      if (ci >= ci0 && ci <= ci1 && cj >= cj0 && cj <= cj1) region.push(key);
+    }
+    recomputeSet(region);
+  }
+
+  /* Écrit les attributs skyL / blkL d'un prisme (même repérage que computeAO). */
   const _lc = new THREE.Vector3(), _ld = new THREE.Vector3();
   function writeLight(b) {
     const layer = b.layer; if (!layer.skyL) return;
-    const own = TYPES[b.type].light || 0, ownS = opac[idxOf(b.i, b.j, b.k)] === 255 ? 0 : skyAt(b.i, b.j, b.k), ownB = Math.max(own, opac[idxOf(b.i, b.j, b.k)] === 255 ? 0 : blkAt(b.i, b.j, b.k));
+    const own = TYPES[b.type].light || 0, op = opacAt(b.i, b.j, b.k), ownS = op === 255 ? 0 : skyAt(b.i, b.j, b.k), ownB = Math.max(own, op === 255 ? 0 : blkAt(b.i, b.j, b.k));
     let s = Math.max(ownS, skyAt(b.i, b.j, b.k + 1)) + Math.max(ownS, skyAt(b.i, b.j, b.k - 1)) * 16;
     let l = Math.max(ownB, blkAt(b.i, b.j, b.k + 1)) + Math.max(ownB, blkAt(b.i, b.j, b.k - 1)) * 16;
     cellCenter(b.i, b.j, b.k, _lc);
@@ -2102,34 +2351,72 @@ const LIGHT_U = { uSkyLight: { value: 1 } };                 // uniform partagé
   function refreshAttribs(i0, j0, i1, j1) {
     for (const b of blocks.values()) if (b.i >= i0 - 1 && b.i <= i1 + 1 && b.j >= j0 - 1 && b.j <= j1 + 1) writeLight(b);
   }
+
   LIGHT = {
     ready: false,
+    bulk: false,
     /** Appelé par addBlock / removeBlock : maintient opac / src et agrandit la boîte sale. */
     onChange(i, j, k, type) {
-      if (!inside(i, j, k)) return;
-      const id = idxOf(i, j, k);
-      opac[id] = opacityOf(type); src[id] = (type && TYPES[type].light) || 0;
-      if (k + 2 > kTop) kTop = Math.min(LIGHT_KMAX - 1, k + 2);
-      if (!this.ready) return;
+      if (k < 0 || k >= LIGHT_KMAX) return;
+      const c = chunkOf(i, j), key = chunkKey(c.ci, c.cj);
+      let ch = chunks.get(key);
+      if (!ch) { ch = newChunk(c.ci, c.cj); chunks.set(key, ch); }
+      const id = idOf(i - c.ci * CS, j - c.cj * CS, k);
+      ch.opac[id] = opacityOf(type); ch.src[id] = (type && TYPES[type].light) || 0;
+      if (!this.ready || this.bulk) return;
       dirty.i0 = Math.min(dirty.i0, i); dirty.i1 = Math.max(dirty.i1, i); dirty.j0 = Math.min(dirty.j0, j); dirty.j1 = Math.max(dirty.j1, j); dirty.any = true;
     },
-    /** Calcul complet (après la génération / le chargement d'une sauvegarde). */
+    /** Chunk fraîchement généré : seule SA lumière doit être calculée (le ciel est
+        local par colonne ; les sources du chunk sont resemées globalement → les
+        voisins reçoivent la lumière par propagation). */
+    onChunkLoad(ci, cj) {
+      lightDirtyChunks.add(chunkKey(ci, cj));
+    },
+    /** Chunk déchargé : libère ses tableaux et marque les voisins. */
+    onChunkUnload(ci, cj) {
+      chunks.delete(chunkKey(ci, cj));
+      for (let cjj = cj - 1; cjj <= cj + 1; cjj++) for (let cii = ci - 1; cii <= ci + 1; cii++)
+        if (loadedChunks.has(chunkKey(cii, cjj))) lightDirtyChunks.add(chunkKey(cii, cjj));
+    },
+    /** Calcul complet (après génération / restauration de sauvegarde). */
     computeAll() {
       const t0 = performance.now();
-      recompute(0, 0, WORLD_I - 1, WORLD_J - 1);
+      recomputeSet([...loadedChunks]);
       for (const b of blocks.values()) writeLight(b);
       this.ready = true; dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
+      lightDirtyChunks.clear();
       this.lastMs = performance.now() - t0;
     },
-    /** À appeler chaque frame : traite la boîte sale (au plus un recalcul par frame). */
+    /** À appeler chaque frame : recalculs différés (chunks + modifications du joueur). */
     update() {
-      if (!dirty.any) return;
       const t0 = performance.now();
-      const i0 = dirty.i0 - 16, i1 = dirty.i1 + 16, j0 = dirty.j0 - 16, j1 = dirty.j1 + 16;
-      recompute(i0, j0, i1, j1);
-      refreshAttribs(Math.max(0, i0), Math.max(0, j0), Math.min(WORLD_I - 1, i1), Math.min(WORLD_J - 1, j1));
-      dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
-      this.lastMs = performance.now() - t0;
+      // 1. lumière des chunks chargés/déchargés (une passe par frame)
+      if (lightDirtyChunks.size) {
+        const region = [...lightDirtyChunks];
+        let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity;
+        for (const key of region) {
+          const [ci, cj] = key.split(',').map(Number);
+          i0 = Math.min(i0, ci * CS); i1 = Math.max(i1, (ci + 1) * CS - 1);
+          j0 = Math.min(j0, cj * CS); j1 = Math.max(j1, (cj + 1) * CS - 1);
+        }
+        recomputeSet(region);
+        lightDirtyChunks.clear();
+        refreshAttribs(i0, j0, i1, j1);
+        this.lastMs = performance.now() - t0;
+        return;                                             // une seule passe lourde par frame
+      }
+      // 2. boîte sale des modifications du joueur
+      if (dirty.any) {
+        const i0 = dirty.i0 - 16, i1 = dirty.i1 + 16, j0 = dirty.j0 - 16, j1 = dirty.j1 + 16;
+        recomputeRegion(i0, j0, i1, j1);
+        refreshAttribs(i0, j0, i1, j1);
+        dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
+        this.lastMs = performance.now() - t0;
+      }
+    },
+    /** Purge complète (nouvelle partie / changement de seed). */
+    reset() {
+      chunks.clear(); lightDirtyChunks.clear(); dirty.any = false; dirty.i0 = dirty.j0 = Infinity; dirty.i1 = dirty.j1 = -Infinity;
     },
     /** Facteur jour (0..1) → uniform ; la nuit garde un plancher « clair de lune » de 0.3. */
     setDaylight(d) { LIGHT_U.uSkyLight.value = 0.3 + 0.7 * d; },
@@ -2141,8 +2428,7 @@ const LIGHT_U = { uSkyLight: { value: 1 } };                 // uniform partagé
       const lv = Math.max(skyAt(c.i, c.j, c.k) / 15 * LIGHT_U.uSkyLight.value, blkAt(c.i, c.j, c.k) / 15);
       const xx = 1 - lv; return ((1 - xx) / (3 * xx + 1)) * 0.95 + 0.05;
     },
-    /** Attributs instanciés d'une couche (appelé par makeLayer via LIGHT_attach). */
-    lastMs: 0, sky, blk, opac,
+    lastMs: 0, chunks,
   };
 }
 // Remplit opac/src pour le monde déjà généré (les blocs ont été ajoutés avant que LIGHT existe), puis calcule tout
@@ -2150,15 +2436,8 @@ for (const b of blocks.values()) LIGHT.onChange(b.i, b.j, b.k, b.type);
 LIGHT.computeAll();
 /* ===== End extension: lighting.js ===== */
 
-/* Plus de socle plein sous le monde : en créatif on peut percer la bedrock (k = 0)
-   et voir le vide.  Un simple cadre sombre matérialise le bord de la carte. */
-const base = new THREE.Mesh(
-  new THREE.BoxGeometry(WORLD_I * HX + 0.5, 0.5, WORLD_J * HROW + 0.5),
-  new THREE.MeshBasicMaterial({ color: 0x1a1a1e, side: THREE.BackSide })
-);
-base.position.set(WORLD_I * HX / 2 - HX / 2, -0.25, WORLD_J * HROW / 2);
-base.visible = false;
-scene.add(base);
+/* Plus de socle plein sous le monde : avec les chunks, le monde n'a plus de bord ;
+   en créatif on peut percer la bedrock (k = 0) et voir le vide en dessous. */
 
 /* ---- Mode de jeu : 'creative' (par défaut) ou 'survival' (touche F4 pour basculer).
    Créatif : bedrock (k = 0) destructible, vol autorisé, Pick Block depuis le catalogue.
@@ -2255,7 +2534,7 @@ function fluidReaction(cellBlock, incomingFam) {
 }
 /** Place (ou renforce) un courant `fam` de niveau `level` en (i,j,k). */
 function placeFlow(i, j, k, level, fam = 'water') {
-  if (!inWorld(i, j) || k < 0) return;
+  if (k < 0) return;
   const ex = blockAt(i, j, k);
   const flowType = FLOW_OF[fam];
   if (!ex) addBlock(i, j, k, flowType, true, level);
@@ -2336,11 +2615,14 @@ highlight.scale.setScalar(1.015);
 highlight.visible = false;
 highlight.renderOrder = 2;
 scene.add(highlight);
-const ghost = new THREE.Mesh(prismGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false }));
+/* Sonde de raycast INVISIBLE : sert uniquement à calculer la cellule de pose
+   (adjacentCellByNormal). Le bloc blanc translucide de prévisualisation a été
+   supprimé : on ne garde que la bordure du bloc visé, comme quand la main est
+   vide, exactement comme dans Minecraft. */
+const ghost = new THREE.Mesh(prismGeo, new THREE.MeshBasicMaterial());
 ghost.scale.setScalar(0.98);
-ghost.matrixAutoUpdate = false;                                           // matrice écrite à la main (visée + affichage)
-ghost.visible = false;
-scene.add(ghost);
+ghost.matrixAutoUpdate = false;                                           // matrice écrite à la main (raycast uniquement)
+ghost.visible = true;                                                     // jamais ajouté à la scène → jamais rendu
 
 /* =====================================================================
    9. JOUEUR : contrôles, gravité, collisions
@@ -2414,8 +2696,8 @@ function groundBelow(px, py, pz) {
   return false;
 }
 function spawn() {
-  const i = Math.floor(WORLD_I / 2), j = Math.floor(WORLD_J / 2);
-  const top = heightMap[j * WORLD_I + i];
+  const i = 0, j = 0;
+  const top = heightAt(i, j);
   cellCenter(i, j, top, player.pos);
   player.pos.y = (top + 1) * BH + 0.5;
   player.vel.set(0, 0, 0);
@@ -2845,7 +3127,6 @@ applyCameraMode();
    13. DEBUG (F3)  (inchangé)
    ===================================================================== */
 let debug = false;
-const CHUNK = 16;
 /* ---- Hitbox F3 : prisme HEXAGONAL rouge = exactement le volume testé par collides() ----
    Le fil de fer est construit sur une hauteur unitaire (y ∈ [0, 1]) et mis à
    l'échelle en Y chaque frame avec entity.height → il suit l'accroupissement.
@@ -3247,9 +3528,7 @@ function pickTarget() {
     const key = cellKey(c.i, c.j, c.k);
     const b = blocks.get(key);
     if (b && (!TYPES[b.type].fluid || targetFluids)) {
-      const wasVisible = ghost.visible; ghost.visible = true;
       const place = adjacentCellByNormal(c, prev);
-      ghost.visible = wasVisible;
       return { hit: c, place, block: b };
     }
     if (key !== prevKey) { prev = c; prevKey = key; }
@@ -3264,15 +3543,7 @@ function updateHighlight() {
     cellCenter(i, j, k, highlight.position);
     highlight.quaternion.copy(isUp(i, j) ? Q_UP : Q_DOWN);
     highlight.visible = true;
-    // Fantôme : montre la cellule de POSE (déduite de la normale) quand on tient un bloc
-    const id = heldId();
-    if (id && isBlockId(id) && target.place && target.place.k >= 0) {
-      cellCenter(target.place.i, target.place.j, target.place.k, ghost.position);
-      ghost.quaternion.copy(isUp(target.place.i, target.place.j) ? Q_UP : Q_DOWN);
-      ghost.updateMatrix(); ghost.matrixWorld.copy(ghost.matrix);
-      ghost.visible = true;
-    } else ghost.visible = false;
-  } else { highlight.visible = false; ghost.visible = false; }
+  } else { highlight.visible = false; }
 }
 /* =====================================================================
    PICK BLOCK (clic molette) — comme Minecraft
@@ -4088,29 +4359,39 @@ function surfaceY(x, z) {
   return null;
 }
 const skyExposed = (x, y, z) => { const c = worldToCell(x, y, z); for (let k = c.k + 1; k < 40; k++) if (blockAt(c.i, c.j, k)) return false; return true; };
-function spawnPassiveMobs() {
-  let tries = 0;
-  while (mobs.length < 14 && tries++ < 400) {
-    const x = 3 + Math.random() * (WORLD_I * HX - 6), z = 3 + Math.random() * (WORLD_J * HROW - 6);
+/** Fait apparaître UN passif sur de l'herbe autour du joueur (monde infini). */
+function spawnOnePassive() {
+  for (let t = 0; t < 30; t++) {
+    const a = Math.random() * Math.PI * 2, r = 8 + Math.random() * 26;
+    const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
     const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1.5) continue;
     const c = worldToCell(x, y - 0.5, z); if (blockAt(c.i, c.j, c.k)?.type !== 'grass') continue;
     if (Math.hypot(x - player.pos.x, z - player.pos.z) < 6) continue;
     spawnMob((() => { const r = Math.random(); return r < 0.35 ? 'pig' : r < 0.65 ? 'cow' : r < 0.83 ? 'sheep' : 'chicken'; })(), x, y, z);
+    return true;
   }
+  return false;
+}
+function spawnPassiveMobs() {
+  let n = 0;
+  while (mobs.length < 14 && n++ < 400) spawnOnePassive();
 }
 let zombieTimer = 0;
 function updateZombieSpawning(dt) {
   zombieTimer += dt; if (zombieTimer < 5) return; zombieTimer = 0;
-  if (isCreative() || isDay()) return;
-  const n = mobs.filter(m => m.kind === 'zombie').length; if (n >= 8) return;
-  for (let t = 0; t < 20; t++) {
-    const a = Math.random() * Math.PI * 2, r = 18 + Math.random() * 20;
-    const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
-    if (x < 1 || z < 1 || x > WORLD_I * HX - 1 || z > WORLD_J * HROW - 1) continue;
-    const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1) continue;
-    const hostile = typeof pickHostileKind === 'function' ? pickHostileKind() : 'zombie';
+  if (!isCreative() && !isDay()) {
+    const n = mobs.filter(m => MOB_DEFS[m.kind]?.hostile).length; if (n < 8) {
+      for (let t = 0; t < 20; t++) {
+        const a = Math.random() * Math.PI * 2, r = 18 + Math.random() * 20;
+        const x = player.pos.x + Math.cos(a) * r, z = player.pos.z + Math.sin(a) * r;
+        const y = surfaceY(x, z); if (y === null || y <= WATER_LEVEL + 1) continue;
+        const hostile = typeof pickHostileKind === 'function' ? pickHostileKind() : 'zombie';
     spawnMob(hostile, x, y, z); chatLog(`§7Un ${MOB_DEFS[hostile].name.toLowerCase()} rôde dans les parages…`); break;
+      }
+    }
   }
+  // Monde infini : on garde quelques passifs autour du joueur
+  if (mobs.filter(m => !MOB_DEFS[m.kind]?.hostile).length < 10) spawnOnePassive();
 }
 const _md = new THREE.Vector3(), _mp = new THREE.Vector3();
 /** Ligne de vue mob → joueur (marche de 0.5 u dans isSolid). */
@@ -4162,9 +4443,9 @@ function updateMobs(dt) {
       if (m.dying > 0.8) removeMob(n);
       continue;
     }
-    // Despawn des zombies trop loin
+    // Despawn des mobs trop loin du joueur (monde infini : pas de bord)
     const distP = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
-    if (def.hostile && distP > 64) { removeMob(n); continue; }
+    if (distP > 44) { removeMob(n); continue; }
     m.hurtT = Math.max(0, m.hurtT - dt); m.invuln = Math.max(0, m.invuln - dt);
     const extraState = typeof updateExtraMobAI === 'function' ? updateExtraMobAI(m, dt, distP) : null;
     if (extraState === 'removed') continue;
@@ -4205,7 +4486,7 @@ function updateMobs(dt) {
     // Bords du monde : demi-tour
     if (extraState === 'retreat') { want.set(m.pos.x - player.pos.x, 0, m.pos.z - player.pos.z).normalize(); speed = def.speed; }
     else if (extraState === 'strafe') { want.set(player.pos.x - m.pos.x, 0, player.pos.z - m.pos.z).normalize().applyAxisAngle(_UP, 1.2); speed = def.speed; }
-    if (m.pos.x < 1 || m.pos.z < 1 || m.pos.x > WORLD_I * HX - 1 || m.pos.z > WORLD_J * HROW - 1) { want.set(WORLD_I * HX / 2 - m.pos.x, 0, WORLD_J * HROW / 2 - m.pos.z).normalize(); speed = def.speed; }
+    if (distP > 38) { want.set(player.pos.x - m.pos.x, 0, player.pos.z - m.pos.z).normalize(); speed = def.speed; }
     if (speed > 0) m.yaw = lerpAngle(m.yaw, Math.atan2(want.x, want.z), Math.min(1, dt * 8));
     // ---- Physique ----
     const p = m.pos, ox = p.x, oz = p.z;
@@ -4426,7 +4707,10 @@ function runCommand(line) {
     case 'tp': {
       const x = numArg(a[0], player.pos.x), y = numArg(a[1], player.pos.y), z = numArg(a[2], player.pos.z);
       if ([x, y, z].some(Number.isNaN)) { chatLog('§cUsage : /tp <x> <y> <z>  (~ = relatif)'); break; }
-      player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.fallDist = 0; refreshCulling(true);
+      player.pos.set(x, y, z); player.vel.set(0, 0, 0); player.fallDist = 0;
+      ensureChunksAround(x, z, true);                                  // monde infini : charge le rayon autour de la destination
+      if (LIGHT) LIGHT.computeAll();
+      refreshCulling(true);
       chatLog(`§7Téléporté en §e${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}`); break;
     }
     case 'give': {
@@ -4449,9 +4733,22 @@ function runCommand(line) {
       spawnMob(k, x, Math.max(y, player.pos.y), z); chatLog(`§7${MOB_DEFS[k].name} invoqué.`); break;
     }
     case 'save': saveWorld().then(() => chatLog('§aPartie sauvegardée.')); break;
-    case 'seed': chatLog('§7Seed : §e1337'); break;
+    case 'seed': {
+      if (a[0] !== undefined && /^-?\d+$/.test(a[0])) {
+        setWorldSeed(parseInt(a[0], 10));
+        updateSeedLine();
+        resetLoadedWorld();
+        spawn();
+        ensureChunksAround(player.pos.x, player.pos.z, true);
+        LIGHT.computeAll();
+        spawnPassiveMobs();
+        refreshCulling(true);
+        chatLog(`§7Nouveau monde généré avec la seed §e${worldSeed}`);
+      } else chatLog(`§7Seed du monde : §e${worldSeed}`);
+      break;
+    }
     case 'recipes': case 'recettes': chatLog(`§e${RECIPES.length} recettes : §7planches, bâtons, table de craft, four, torches, grès, pierre taillée, blocs de fer/or/diamant, pioches/haches/pelles/épées (bois, pierre, fer, diamant), armures (cuir, fer, diamant). Four : fer, or, sable→verre, cobble→roche, viandes, bois→charbon.`); break;
-    case 'help': chatLog('§e/gamemode <creative|survival> · /give <objet> [n] · /tp <x> <y> <z> · /clear · /time set <day|night> · /summon <zombie|pig|cow> · /kill · /heal · /xp <n> · /save · /recipes'); break;
+    case 'help': chatLog('§e/gamemode <creative|survival> · /give <objet> [n] · /tp <x> <y> <z> · /clear · /time set <day|night> · /summon <zombie|pig|cow> · /kill · /heal · /xp <n> · /seed [n] · /save · /recipes'); break;
     default: chatLog(`§cCommande inconnue : /${cmd}  (essayez /help)`);
   }
 }
@@ -4470,8 +4767,7 @@ function runCommand(line) {
    (piles {id, n}), position + orientation du joueur, vie / faim / XP, mode
    de jeu et heure du monde.  Base 'prismcraft', store 'saves', clé 'world1'.
    ===================================================================== */
-const SAVE_KEY = 'world1', SAVE_VERSION = 2;
-const edits = new Map();
+const SAVE_KEY = 'world1', SAVE_VERSION = 3;
 function recordEdit(i, j, k, type) { edits.set(cellKey(i, j, k), type); }
 function idbOpen() {
   return new Promise((res, rej) => {
@@ -4492,7 +4788,7 @@ async function idbGet(key) {
 const saveStatus = document.getElementById('save-status');
 async function saveWorld() {
   const data = {
-    version: SAVE_VERSION, date: Date.now(),
+    version: SAVE_VERSION, date: Date.now(), seed: worldSeed,
     edits: Array.from(edits, ([key, type]) => [key, type]),
     hotbar: HOTBAR, inventory: INVENTORY, armor: player.armor, selected, furnace: { in: FURNACE.in, fuel: FURNACE.fuel, out: FURNACE.out },
     player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw, pitch: player.pitch, health: player.health, food: player.food, saturation: player.saturation, xp: player.xp, level: player.level },
@@ -4503,19 +4799,13 @@ async function saveWorld() {
   flashHint('Partie sauvegardée');
   return data;
 }
-/** Rejoue une sauvegarde sur le monde fraîchement généré. */
+/** Restaure une sauvegarde : régénère le monde infini avec la seed sauvegardée,
+    puis réapplique le journal des modifications autour du joueur. */
 function applySave(data) {
-  for (const [key, type] of data.edits) {
-    const [i, j, k] = key.split(',').map(Number);
-    const ex = blockAt(i, j, k);
-    if (ex) removeBlock(i, j, k);
-    if (type && TYPES[type]) addBlock(i, j, k, type);
-    edits.set(key, type);
-  }
-  const fix = (arr, src, len) => { for (let n = 0; n < len; n++) { const st = src?.[n]; arr[n] = st && DEF(st.id) ? { id: st.id, n: Math.max(1, st.n | 0) } : null; } };
-  fix(HOTBAR, data.hotbar, 9); fix(INVENTORY, data.inventory, 27); fix(player.armor, data.armor, 4);
-  if (data.furnace) for (const k of ['in', 'fuel', 'out']) { const st = data.furnace[k]; FURNACE[k] = st && DEF(st.id) ? { id: st.id, n: st.n | 0 } : null; }
-  selected = data.selected ?? 0;
+  // 1. journal des modifications (réappliqué par chunk au chargement)
+  edits.clear();
+  for (const [key, type] of data.edits) edits.set(key, type);
+  // 2. position / orientation / état du joueur
   const P = data.player;
   if (P) {
     player.pos.set(P.x, P.y, P.z); player.vel.set(0, 0, 0);
@@ -4523,9 +4813,21 @@ function applySave(data) {
     player.health = P.health ?? 20; player.food = P.food ?? 20; player.saturation = P.saturation ?? 5; player.xp = P.xp ?? 0; player.level = P.level ?? 0;
   }
   worldTime = data.worldTime ?? worldTime;
+  // 3. régénère le monde autour de la position sauvegardée avec la seed sauvegardée
+  setWorldSeed(data.seed ?? worldSeed);
+  updateSeedLine();
+  resetLoadedWorld();
+  ensureChunksAround(player.pos.x, player.pos.z, true);
+  LIGHT.computeAll();
+  spawnPassiveMobs();
+  // 4. inventaire / armure / four / mode de jeu
+  const fix = (arr, src, len) => { for (let n = 0; n < len; n++) { const st = src?.[n]; arr[n] = st && DEF(st.id) ? { id: st.id, n: Math.max(1, st.n | 0) } : null; } };
+  fix(HOTBAR, data.hotbar, 9); fix(INVENTORY, data.inventory, 27); fix(player.armor, data.armor, 4);
+  if (data.furnace) for (const k of ['in', 'fuel', 'out']) { const st = data.furnace[k]; FURNACE[k] = st && DEF(st.id) ? { id: st.id, n: st.n | 0 } : null; }
+  selected = data.selected ?? 0;
   setGameMode(data.gameMode || 'creative');
   refreshInv(); refreshCulling(true);
-  chatLog(`§aPartie restaurée §7(${data.edits.length} modification(s), ${new Date(data.date).toLocaleString('fr-FR')})`);
+  chatLog(`§aPartie restaurée §7(seed §e${worldSeed}§7, ${data.edits.length} modification(s), ${new Date(data.date).toLocaleString('fr-FR')})`);
 }
 let pendingSave = null;
 idbGet(SAVE_KEY).then(d => {
@@ -5038,7 +5340,7 @@ spawnPassiveMobs();
 document.body.classList.toggle('survival', !isCreative());
 chatLog('§eBienvenue dans PrismCraft 1.8 — T pour le tchat, /help pour les commandes.');
 /* API de debug (console navigateur) : PrismCraft.cmd('give slime 64'), PrismCraft.player, PrismCraft.mobs… */
-window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, CHESTS: typeof CHESTS !== 'undefined' ? CHESTS : null, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
+window.PrismCraft = { player, mobs, items, blocks, TYPES, ITEMS, HOTBAR, INVENTORY, CHESTS: typeof CHESTS !== 'undefined' ? CHESTS : null, cmd: runCommand, damagePlayer, attackMob, spawnMob, saveWorld, applySave, setGameMode, addBlock, removeBlock, blockAt, openInventory, closeInventory, refreshInv, get gameMode() { return gameMode; }, get worldTime() { return worldTime; }, get seed() { return worldSeed; }, get lightMs() { return LIGHT && LIGHT.lastMs; }, get chunksInfo() { return { loaded: loadedChunks.size, loadQ: loadQueue.length, unloadQ: unloadQueue.length, playerChunk: (() => { const c = worldToCell(player.pos.x, 0, player.pos.z); return chunkOf(c.i, c.j); })() }; }, get edits() { return edits; }, updatePlayer, keys, mouseButtons, pickBlock, breakBlock, drawSurvivalHUD, head, controls, CRAFT2, CRAFT3, FURNACE, RECIPES, matchRecipes, takeCraftResult, updateFurnace, miningTime, canHarvest, get invMode() { return invMode; }, get target() { return target; }, skyUniforms, skyDome, cloudGroup, setTime(t) { worldTime = t; }, setCam(n) { camMode = n; applyCameraMode(); } };
 
 
 /* ===== PrismCraft extension: options.js ===== */
@@ -5143,6 +5445,7 @@ function animate() {
   anim.switchT = Math.min(1, anim.switchT + dt / 0.3);
 
   updatePlayer(dt);
+  updateChunks(player.pos.x, player.pos.z);   // monde infini : charge/décharge les chunks autour du joueur
   updateHighlight();
   updateMining(dt);
   updateCamera();

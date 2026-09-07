@@ -27,4 +27,4 @@ function makeNoise3(seed) {
     return sum / norm;
   };
 }
-const noise3 = makeNoise3(1337);
+let noise3 = makeNoise3(1337);
