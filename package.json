@@ -1,0 +1,15 @@
+{
+  "name": "prismcraft-bench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bancs de mesure du pipeline de chunks (parité moteur ⇄ worker, intégration, performances). three n'est requis QUE par les bancs, pas par le jeu.",
+  "scripts": {
+    "parity": "node PrismCraft/bench/parity.mjs",
+    "test": "node PrismCraft/bench/chunkmesh.test.mjs",
+    "bench": "node --expose-gc PrismCraft/bench/bench.mjs",
+    "check": "npm run parity && npm run test && npm run bench"
+  },
+  "devDependencies": {
+    "three": "0.169.0"
+  }
+}

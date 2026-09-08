@@ -51,6 +51,32 @@ def extract_items_extra(src: str) -> tuple[str, str]:
     return items, rest
 
 
+def worker_bundle() -> str:
+    """Concatène le noyau pur + l'entrée du Web Worker.
+
+    Le résultat est inliné dans un <script type="text/prismcraft-worker"> :
+    le navigateur ne l'exécute pas, mais chunkmesh.js en fait un Blob →
+    `new Worker(URL.createObjectURL(...))`.  Le jeu reste donc un FICHIER
+    UNIQUE, sans requête réseau pour le worker.
+    """
+    src = read("worker/prismcore.js") + "\n" + read("worker/chunkWorker.js")
+    if "</script" in src.lower():
+        raise RuntimeError("le source du worker contient '</script' : balise fermante prématurée")
+    return src
+
+
+def add_worker_tag(html: str) -> str:
+    tag = (
+        '\n<!-- Source du Web Worker de génération/maillage des chunks. type inconnu du\n'
+        '     navigateur ⇒ jamais exécuté ici ; lu par chunkmesh.js puis chargé\n'
+        '     comme Blob dans un vrai Worker. -->\n'
+        '<script id="pc-chunk-worker" type="text/prismcraft-worker">\n'
+        + worker_bundle()
+        + "\n</script>\n"
+    )
+    return replace_once(html, "</head>", tag + "</head>", "worker script tag")
+
+
 def add_options_css(html: str) -> str:
     css = r'''
   /* Options injected by options.js */
@@ -74,10 +100,13 @@ def build() -> str:
     js_start = "import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';"
 
     # Audio and a declared lighting handle must be available to all fragments.
+    # chunkmesh.js declares a single factory (createChunkRenderer) and collides
+    # with nothing in the engine, so it can sit right at the top of the module.
     html = insert_after(html, js_start,
                         block("audio.js", read("audio.js")) +
+                        block("chunkmesh.js", read("chunkmesh.js")) +
                         "\nlet LIGHT = null;\n",
-                        "audio + LIGHT declaration")
+                        "audio + chunkmesh + LIGHT declaration")
 
     # Add blocks before TYPE_IDS is frozen.
     blocks_extra = read("blocks_extra.js")
@@ -226,6 +255,7 @@ def build() -> str:
                         "let VIEW_DIST_SQ = VIEW_DISTANCE * VIEW_DISTANCE;",
                         "mutable culling distance")
     html = add_options_css(html)
+    html = add_worker_tag(html)
     options = read("options.js").replace(
         "  controls.pointerSpeed = OPTIONS.sensitivity;\n",
         "  controls.pointerSpeed = OPTIONS.sensitivity;\n"
