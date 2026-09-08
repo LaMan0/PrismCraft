@@ -24,6 +24,12 @@
 | Frustum culling | **désactivé** (`frustumCulled = false`) | actif, sphère fournie par le worker | 34/60 meshes retenus en test |
 | Frames perdues à 60 FPS | **2,2 frame** de freeze par chunk chargé | **0** | — |
 
+> Les temps en millisecondes varient de ±30 % d'un lancement à l'autre (GC,
+> fréquence CPU) : sur cette machine, la synthèse est remontée entre **×24 et
+> ×29** selon les runs. Les **rapports** et les **comptages** (triangles, faces,
+> octets, prismes) sont, eux, parfaitement déterministes — ce sont eux qu'il
+> faut lire.
+
 Le calcul lui-même (bruit + terrain + lumière + maillage) coûte **7,05 ms par
 chunk** — il n'est pas « trop cher », il est simplement **au mauvais endroit**.
 Le déplacer dans un Web Worker suffit à supprimer 100 % des freezes de
